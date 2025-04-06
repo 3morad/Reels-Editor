@@ -23,6 +23,10 @@ class VideoInput:
             # Verify video clip has required attributes
             if not hasattr(self.video_clip, 'h') or not hasattr(self.video_clip, 'w'):
                 raise ValueError("Video clip missing required attributes")
+            
+            # Verify video clip has duration
+            if not hasattr(self.video_clip, 'duration') or self.video_clip.duration <= 0:
+                raise ValueError("Video clip has invalid duration")
                 
             # Verify video clip can get frames
             test_frame = self.video_clip.get_frame(0)
