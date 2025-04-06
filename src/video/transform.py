@@ -43,7 +43,7 @@ class VideoTransformer:
         self.video_clip = video_clip
         self.transformed_clip = None
         self.effects = []
-        self.text_processor = TextProcessor()
+        # self.text_processor = TextProcessor()  # Disabled for now
         print("=== VideoTransformer Initialization Complete ===\n")
 
     def _validate_frame(self, frame) -> bool:
@@ -526,7 +526,10 @@ class VideoTransformer:
     def relocate_text(self) -> 'VideoTransformer':
         """Relocate text in the video."""
         print("\n=== Starting Text Relocation ===")
-        
+        # Temporarily disable text relocation
+        print("Text relocation is currently disabled")
+        return self
+        """
         def process_text_relocation(frame):
             print(f"\nProcessing text relocation frame")
             if not isinstance(frame, np.ndarray):
@@ -577,6 +580,7 @@ class VideoTransformer:
             
         print("=== Text Relocation Complete ===\n")
         return self
+        """
 
     def get_transformed_clip(self) -> VideoFileClip:
         """Get the transformed video clip."""

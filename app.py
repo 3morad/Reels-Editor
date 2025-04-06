@@ -7,6 +7,9 @@ from src.video.transform import VideoTransformer
 import random
 import atexit
 from videohash import VideoHash
+import zipfile
+import traceback
+from datetime import datetime
 
 # Set page config
 st.set_page_config(
@@ -82,7 +85,8 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload your video", type=['mp4', 'mov', 'avi'])
     
     # Number of variations
-    num_variations = st.slider("Number of variations", 1, 10, 3)
+    num_variations = st.slider("Number of Variations", 1, 50, 1, 
+                             help="Select how many different variations to generate")
     
     # Effect selection
     st.subheader("Effects")
@@ -91,7 +95,7 @@ with st.sidebar:
         "Crop": st.checkbox("Random Crop", value=True),
         "Filter": st.checkbox("Random Filter", value=True),
         "Transition": st.checkbox("Random Transition", value=True),
-        "Text Relocation": st.checkbox("Text Relocation", value=True),
+        # "Text Relocation": st.checkbox("Text Relocation", value=True),  # Hidden for now
         "Hash Modification": st.checkbox("Hash Modification", value=True)
     }
     
@@ -105,15 +109,14 @@ with st.sidebar:
             'dct',  # Frequency domain modifications
             'temporal',  # Frame pattern modifications
             'noise',  # Selective noise addition
-            'geometric',  # Spatial transformations
             'color'  # Color space manipulations
         ]
         
-        # Use multiselect instead of selectbox
+        # Select all methods by default
         selected_methods = st.multiselect(
             "Select Hash Modification Methods",
             hash_methods,
-            default=['pixel', 'delay', 'watermark'],  # Default selection
+            default=hash_methods,  # All methods selected by default
             help="Choose one or more methods to modify the video hash while preserving visual quality"
         )
         
@@ -125,7 +128,6 @@ with st.sidebar:
             'dct': "Applies frequency domain modifications using DCT coefficients",
             'temporal': "Modifies frame patterns and timing while preserving visual flow",
             'noise': "Adds calibrated noise patterns below human perception threshold",
-            'geometric': "Applies subtle perspective and spatial transformations",
             'color': "Modifies color space components while preserving visual appearance"
         }
         
@@ -158,57 +160,52 @@ if uploaded_file is not None:
     st.video(video_path)
     
     # Process button
-    if st.button("✨ Generate Variations"):
-        with st.spinner("Processing your video..."):
-            try:
-                # Initialize video input with validation
-                video_input = VideoInput(video_path)
-                
-                # Get hash of original video
-                original_hash = VideoHash(video_path)
-                st.info(f"Original Video Hash: {original_hash.hash_hex}")
-                
-                # Analyze video properties
-                video_properties = video_input.analyze()
-                st.info(f"Video Properties: Duration: {video_properties['duration']:.2f}s, Resolution: {video_properties['width']}x{video_properties['height']}, FPS: {video_properties['fps']}")
-                
-                # Create output directory if it doesn't exist
-                output_dir = Path("output")
-                output_dir.mkdir(exist_ok=True)
-                
-                # Process variations
-                for i in range(num_variations):
-                    # Create transformer with the video clip
+    if st.button("Process Video", key="process_button"):
+        try:
+            # Create output directory if it doesn't exist
+            os.makedirs("output", exist_ok=True)
+            
+            # Initialize video input with validation
+            video_input = VideoInput(video_path)
+            
+            # Get hash of original video
+            original_hash = VideoHash(video_path)
+            st.info(f"Original Video Hash: {original_hash.hash_hex}")
+            
+            # Analyze video properties
+            video_properties = video_input.analyze()
+            st.info(f"Video Properties: Duration: {video_properties['duration']:.2f}s, Resolution: {video_properties['width']}x{video_properties['height']}, FPS: {video_properties['fps']}")
+            
+            # Process multiple variations
+            processed_videos = []
+            for i in range(num_variations):
+                with st.spinner(f"Processing variation {i+1}/{num_variations}..."):
+                    # Reset transformer for each variation
                     transformer = VideoTransformer(video_input.video_clip)
                     
-                    # Apply random effects
+                    # Apply selected effects
                     applied_effects = []
-                    
                     if effects["Zoom"]:
                         zoom_factor = random.uniform(1.1, 1.5)
                         transformer.apply_zoom(zoom_factor)
                         applied_effects.append(f"Zoom: {zoom_factor:.2f}x")
-                    
                     if effects["Crop"]:
                         crop_percent = random.uniform(0.1, 0.3)
                         transformer.apply_crop(crop_percent)
                         applied_effects.append(f"Crop: {crop_percent*100:.1f}%")
-                    
                     if effects["Filter"]:
                         filter_type = random.choice(["grayscale", "blur", "colorx", "sepia", "invert", "brightness", "contrast", "saturation"])
                         intensity = random.uniform(0.5, 1.5)
                         transformer.apply_filter(filter_type, intensity)
                         applied_effects.append(f"Filter: {filter_type} ({intensity:.2f})")
-                    
                     if effects["Transition"]:
                         transition_type = random.choice(["fadein", "fadeout"])
                         duration = random.uniform(0.5, 2.0)
                         transformer.apply_transition(transition_type, duration)
                         applied_effects.append(f"Transition: {transition_type} ({duration:.1f}s)")
-                    
-                    if effects["Text Relocation"]:
-                        transformer.relocate_text()
-                        applied_effects.append("Text Relocation")
+                    # if effects["Text Relocation"]:  # Hidden for now
+                    #     transformer.relocate_text()
+                    #     applied_effects.append("Text Relocation")
                     
                     if effects["Hash Modification"]:
                         # Apply all selected hash modification methods
@@ -216,61 +213,80 @@ if uploaded_file is not None:
                             transformer.modify_hash(hash_method)
                             applied_effects.append(f"Hash Modification: {hash_method}")
                     
-                    # Get transformed clip and validate
+                    # Generate output filename
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    output_filename = f"output/variation_{i+1}_{timestamp}.mp4"
+                    
+                    # Get transformed clip and export
                     transformed_clip = transformer.get_transformed_clip()
-                    if not transformed_clip or not hasattr(transformed_clip, 'duration'):
-                        raise ValueError("Failed to create transformed video clip")
-                    
-                    # Save variation
-                    output_path = output_dir / f"variation_{i+1}.mp4"
-                    transformed_clip.write_videofile(str(output_path))
-                    
-                    # Get hash of variation
-                    variation_hash = VideoHash(str(output_path))
-                    # Calculate hash difference using hamming distance
-                    hash_difference = bin(int(original_hash.hash_hex, 16) ^ int(variation_hash.hash_hex, 16)).count('1') / 64.0
-                    
-                    # Display variation with effects info
-                    st.subheader(f"Variation {i+1}")
-                    st.video(str(output_path))
-                    
-                    # Display hash information
-                    st.markdown(f"""
-                        <div style='background-color: #1E1E1E; padding: 10px; border-radius: 5px; margin-bottom: 10px;'>
-                            <h4>Hash Information:</h4>
-                            <p>Original Hash: {original_hash.hash_hex}</p>
-                            <p>Variation Hash: {variation_hash.hash_hex}</p>
-                            <p>Hash Difference: {hash_difference * 100:.2f}%</p>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Display applied effects
-                    st.markdown("""
-                        <div class="effects-info">
-                            <h4>Applied Effects:</h4>
-                            <ul>
-                    """, unsafe_allow_html=True)
-                    
-                    for effect in applied_effects:
-                        st.markdown(f"<li>{effect}</li>", unsafe_allow_html=True)
-                    
-                    st.markdown("</ul></div>", unsafe_allow_html=True)
-                    
-                    st.download_button(
-                        label=f"Download Variation {i+1}",
-                        data=open(output_path, "rb").read(),
-                        file_name=f"variation_{i+1}.mp4",
-                        mime="video/mp4"
+                    transformed_clip.write_videofile(
+                        output_filename,
+                        codec='libx264',
+                        audio_codec='aac',
+                        bitrate='5000k',
+                        threads=4,
+                        preset='medium'
                     )
+                    processed_videos.append(output_filename)
+                    
+                    # Display video properties and hash information
+                    st.subheader(f"Variation {i+1} Information")
+                    st.write(f"Applied Effects: {', '.join(applied_effects)}")
+                    
+                    # Calculate and display hash information
+                    try:
+                        variation_hash = VideoHash(output_filename)
+                        
+                        # Calculate hash difference
+                        # Convert hex strings to integers first
+                        original_hash_int = int(original_hash.hash_hex, 16)
+                        variation_hash_int = int(variation_hash.hash_hex, 16)
+                        
+                        # Calculate Hamming distance
+                        hash_diff = bin(original_hash_int ^ variation_hash_int).count('1')
+                        hash_diff_percent = (hash_diff / 64) * 100  # 64 bits in the hash
+                        
+                        st.write("Hash Information:")
+                        st.write(f"Original Hash: {original_hash.hash_hex}")
+                        st.write(f"Variation Hash: {variation_hash.hash_hex}")
+                        st.write(f"Hash Difference: {hash_diff_percent:.2f}%")
+                    except Exception as e:
+                        st.error(f"Error calculating hash: {e}")
+                        print(f"Hash calculation error: {e}")
+                        traceback.print_exc()
+                    
+                    # Display the processed video
+                    st.video(output_filename)
+                    
+                    # Clean up the transformed clip
+                    transformed_clip.close()
+            
+            # Add download all variations button
+            if processed_videos:
+                st.subheader("Download All Variations")
+                zip_filename = f"output/variations_{timestamp}.zip"
+                with zipfile.ZipFile(zip_filename, 'w') as zipf:
+                    for video in processed_videos:
+                        zipf.write(video, os.path.basename(video))
                 
-                st.success("🎉 All variations generated successfully!")
+                with open(zip_filename, 'rb') as f:
+                    st.download_button(
+                        label="Download All Variations",
+                        data=f,
+                        file_name=f"variations_{timestamp}.zip",
+                        mime="application/zip"
+                    )
+            
+            # Clean up video input
+            video_input.close()
                 
-            except Exception as e:
-                st.error(f"Error processing video: {str(e)}")
-            finally:
-                # Close the video input to free resources
-                if 'video_input' in locals():
-                    video_input.close()
+        except Exception as e:
+            st.error(f"Error processing video: {e}")
+            print(f"ERROR processing video: {e}")
+            traceback.print_exc()
+            # Ensure cleanup even if there's an error
+            if 'video_input' in locals():
+                video_input.close()
 else:
     st.info("👆 Upload a video to get started!")
 
