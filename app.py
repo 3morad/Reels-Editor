@@ -210,7 +210,7 @@ if uploaded_file is not None:
                     if effects["Hash Modification"]:
                         # Apply all selected hash modification methods
                         for hash_method in selected_methods:
-                            transformer.modify_hash(hash_method)
+                            transformer.modify_hash(hash_method, min_difference=0.05, variation_id=i)
                             applied_effects.append(f"Hash Modification: {hash_method}")
                     
                     # Generate output filename

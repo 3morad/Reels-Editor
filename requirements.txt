@@ -1,4 +1,4 @@
-moviepy>=1.0.3
+moviepy==1.0.3
 opencv-python>=4.5.0
 Pillow==9.5.0
 pydub>=0.25.1
