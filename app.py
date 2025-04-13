@@ -3,13 +3,18 @@ import os
 from pathlib import Path
 import tempfile
 from src.video.input import VideoInput
-from src.video.transform import VideoTransformer
+from src.video.core.transformer import VideoTransformer
 import random
 import atexit
 from videohash import VideoHash
 import zipfile
 import traceback
 from datetime import datetime
+from src.video.utils.logging_utils import configure_logger
+import time
+
+# Configure logger
+logger = configure_logger("App")
 
 # Set page config
 st.set_page_config(
@@ -89,13 +94,13 @@ with st.sidebar:
                              help="Select how many different variations to generate")
     
     # Effect selection
-    st.subheader("Effects")
+    st.subheader("Select Effects to Apply")
     effects = {
-        "Zoom": st.checkbox("Random Zoom", value=True),
-        "Crop": st.checkbox("Random Crop", value=True),
-        "Filter": st.checkbox("Random Filter", value=True),
-        "Transition": st.checkbox("Random Transition", value=True),
-        # "Text Relocation": st.checkbox("Text Relocation", value=True),  # Hidden for now
+        "Zoom": st.checkbox("Zoom", value=True),
+        "Crop": st.checkbox("Crop", value=True),
+        "Filter": st.checkbox("Filter", value=True),
+        "Transition": st.checkbox("Transition", value=True),
+        "Trim": st.checkbox("Trim", value=False),
         "Hash Modification": st.checkbox("Hash Modification", value=True)
     }
     
@@ -103,13 +108,14 @@ with st.sidebar:
     if effects["Hash Modification"]:
         st.subheader("Hash Modification Options")
         hash_methods = [
-            'pixel',  # Basic pixel-level modifications
+            'pixelate',  # Basic pixel-level modifications
+            'glitch',  # Glitch effect with horizontal shifts
+            'dct',  # Frequency domain modifications
             'delay',  # Frame delay/insertion
             'watermark',  # Pattern-based watermarking
-            'dct',  # Frequency domain modifications
-            'temporal',  # Frame pattern modifications
             'noise',  # Selective noise addition
-            'color'  # Color space manipulations
+            'color',  # Color space manipulations
+            'metadata'  # Metadata modifications
         ]
         
         # Select all methods by default
@@ -122,13 +128,14 @@ with st.sidebar:
         
         # Add descriptions for each method
         method_descriptions = {
-            'pixel': "Basic pixel-level modifications with subtle brightness and noise changes",
+            'pixelate': "Basic pixel-level modifications with subtle brightness and noise changes",
+            'glitch': "Applies glitch effect with horizontal shifts",
+            'dct': "Applies frequency domain modifications using DCT coefficients",
             'delay': "Inserts imperceptible frame delays at the beginning of the video",
             'watermark': "Adds a subtle pattern-based watermark that affects hash generation",
-            'dct': "Applies frequency domain modifications using DCT coefficients",
-            'temporal': "Modifies frame patterns and timing while preserving visual flow",
             'noise': "Adds calibrated noise patterns below human perception threshold",
-            'color': "Modifies color space components while preserving visual appearance"
+            'color': "Modifies color space components while preserving visual appearance",
+            'metadata': "Applies subtle modifications to video metadata (FPS, resolution, duration)"
         }
         
         # Display descriptions for selected methods
@@ -147,6 +154,94 @@ with st.sidebar:
     st.subheader("Processing Options")
     sample_rate = st.slider("Frame Sample Rate", 1, 60, 30)
     quality = st.select_slider("Output Quality", options=["Low", "Medium", "High"], value="Medium")
+
+def process_video(uploaded_file, num_variations=3, apply_random_effects=True):
+    """Process the uploaded video file and generate variations"""
+    try:
+        # Create a temporary file to store the uploaded video
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            tmp_path = tmp_file.name
+        
+        # Register the temporary file for cleanup
+        temp_files.append(tmp_path)
+        
+        # Initialize video input
+        video_input = VideoInput(tmp_path)
+        
+        # Get video properties
+        properties = video_input.analyze()
+        
+        # Create transformer
+        transformer = VideoTransformer(video_input.video_clip)
+        
+        # Apply random effects if requested
+        if apply_random_effects:
+            # Apply zoom effect
+            zoom_factor = random.uniform(1.05, 1.15)
+            transformer.apply_zoom(zoom_factor)
+            
+            # Apply crop effect
+            crop_percent = random.uniform(0.05, 0.2)
+            transformer.apply_crop(crop_percent)
+            
+            # Apply filter effect
+            filter_types = ["brightness"]
+            filter_type = random.choice(filter_types)
+            # Ensure intensity is between 0 and 1, but use much lower values
+            intensity = random.uniform(0.05, 0.2)  # Reduced from 0.1-0.9 to 0.05-0.2
+            transformer.apply_filter(filter_type, intensity)
+            
+            # Apply transition effect
+            transition_types = ["fadein", "fadeout"]
+            transition_type = random.choice(transition_types)
+            duration = random.uniform(0.5, 1.5)
+            transformer.apply_transition(transition_type, duration)
+        
+        # Generate variations
+        variations = []
+        for i in range(num_variations):
+            # Apply hash modification
+            hash_types = ["pixelate", "glitch", "metadata"]  # Added metadata to default types
+            hash_type = random.choice(hash_types)
+            # Ensure intensity is between 0 and 1
+            intensity = random.uniform(0.1, 0.3)  # Reduced intensity for more subtle changes
+            
+            # Apply hash modification using the hash_effects module
+            transformer.modify_hash(hash_type, intensity)
+            
+            # Get transformed clip
+            transformed_clip = transformer.get_transformed_clip()
+            
+            # Create a temporary file for the variation
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as var_file:
+                var_path = var_file.name
+            
+            # Register the variation file for cleanup
+            temp_files.append(var_path)
+            
+            # Write the variation to the temporary file
+            transformed_clip.write_videofile(var_path, codec='libx264', audio_codec='aac')
+            
+            # Add the variation to the list
+            variations.append({
+                'path': var_path,
+                'effects': transformer.get_effects()
+            })
+            
+            # Reset the transformer for the next variation
+            transformer.reset()
+        
+        # Close the video input
+        video_input.close()
+        
+        return properties, variations
+    
+    except Exception as e:
+        logger.error(f"Error processing video: {str(e)}")
+        logger.error(traceback.format_exc())
+        st.error(f"Error processing video: {str(e)}")
+        return None, None
 
 # Main content area
 if uploaded_file is not None:
@@ -186,7 +281,7 @@ if uploaded_file is not None:
                     # Apply selected effects
                     applied_effects = []
                     if effects["Zoom"]:
-                        zoom_factor = random.uniform(1.1, 1.5)
+                        zoom_factor = random.uniform(1.05, 1.15)
                         transformer.apply_zoom(zoom_factor)
                         applied_effects.append(f"Zoom: {zoom_factor:.2f}x")
                     if effects["Crop"]:
@@ -194,8 +289,10 @@ if uploaded_file is not None:
                         transformer.apply_crop(crop_percent)
                         applied_effects.append(f"Crop: {crop_percent*100:.1f}%")
                     if effects["Filter"]:
-                        filter_type = random.choice(["grayscale", "blur", "colorx", "sepia", "invert", "brightness", "contrast", "saturation"])
-                        intensity = random.uniform(0.5, 1.5)
+                        # Only use brightness filter
+                        filter_type = "brightness"
+                        # Ensure intensity is between 0 and 1, but use much lower values
+                        intensity = random.uniform(0.05, 0.2)  # Reduced from 0.1-0.9 to 0.05-0.2
                         transformer.apply_filter(filter_type, intensity)
                         applied_effects.append(f"Filter: {filter_type} ({intensity:.2f})")
                     if effects["Transition"]:
@@ -203,15 +300,20 @@ if uploaded_file is not None:
                         duration = random.uniform(0.5, 2.0)
                         transformer.apply_transition(transition_type, duration)
                         applied_effects.append(f"Transition: {transition_type} ({duration:.1f}s)")
-                    # if effects["Text Relocation"]:  # Hidden for now
-                    #     transformer.relocate_text()
-                    #     applied_effects.append("Text Relocation")
+                    
+                    if effects["Trim"]:
+                        trim_percent = random.uniform(0.1, 0.3)  # Trim 10-30% from the end
+                        transformer.apply_trim(trim_percent)
+                        applied_effects.append(f"Trim: {trim_percent*100:.1f}% from end")
                     
                     if effects["Hash Modification"]:
                         # Apply all selected hash modification methods
                         for hash_method in selected_methods:
-                            transformer.modify_hash(hash_method, min_difference=0.05, variation_id=i)
-                            applied_effects.append(f"Hash Modification: {hash_method}")
+                            # Use higher intensity values for hash modifications
+                            # This will ensure the changes are effective while still being visually subtle
+                            intensity = random.uniform(0.08, 0.12)  # Increased from 0.03-0.05 to 0.08-0.12
+                            transformer.modify_hash(hash_method, intensity)
+                            applied_effects.append(f"Hash Modification: {hash_method} ({intensity:.3f})")
                     
                     # Generate output filename
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -229,12 +331,19 @@ if uploaded_file is not None:
                     )
                     processed_videos.append(output_filename)
                     
+                    # Ensure the file is fully written and closed
+                    transformed_clip.close()
+                    
                     # Display video properties and hash information
                     st.subheader(f"Variation {i+1} Information")
                     st.write(f"Applied Effects: {', '.join(applied_effects)}")
                     
                     # Calculate and display hash information
                     try:
+                        # Add a small delay to ensure file is fully written
+                        time.sleep(0.5)
+                        
+                        # Calculate hash with explicit file path
                         variation_hash = VideoHash(output_filename)
                         
                         # Calculate hash difference
@@ -257,9 +366,6 @@ if uploaded_file is not None:
                     
                     # Display the processed video
                     st.video(output_filename)
-                    
-                    # Clean up the transformed clip
-                    transformed_clip.close()
             
             # Add download all variations button
             if processed_videos:

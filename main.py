@@ -2,7 +2,7 @@ import os
 import argparse
 import random
 from src.video.input import VideoInput
-from src.video.transform import VideoTransformer
+from src.video.core.transformer import VideoTransformer
 from src.audio.processor import AudioProcessor
 from src.video.export import VideoExporter
 from src.audio.voice_over import VoiceOverGenerator

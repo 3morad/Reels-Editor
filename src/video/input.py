@@ -5,17 +5,10 @@ from typing import Dict, Tuple, Optional
 from moviepy.editor import VideoFileClip
 import cv2
 import numpy as np
+from .utils.logging_utils import configure_logger
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("debug.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger("VideoInput")
+# Configure logger using the utility function
+logger = configure_logger("VideoInput")
 
 class VideoInput:
     def __init__(self, input_path: str):
@@ -133,4 +126,11 @@ class VideoInput:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         logger.debug("Exiting context manager")
-        self.close() 
+        self.close()
+
+    def get_ffmpeg_version(self):
+        """Get the FFmpeg version used to create the video file."""
+        result = os.popen("ffmpeg -version").read()
+        version = result.split('\n')[0]
+        logger.debug(f"FFmpeg version: {version}")
+        return version 
