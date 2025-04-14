@@ -94,8 +94,8 @@ videohash>=2.1.9
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/video-hash-modifier.git
-cd video-hash-modifier
+git clone https://github.com/yourusername/Reels-Editor.git
+cd Reels-Editor
 ```
 
 2. Create and activate a virtual environment:
