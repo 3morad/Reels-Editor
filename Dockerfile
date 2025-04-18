@@ -8,6 +8,11 @@ RUN apt-get update && apt-get install -y \
     libsm6 \
     libxext6 \
     libgl1-mesa-glx \
+    libglib2.0-0 \
+    libxrender1 \
+    libfontconfig1 \
+    libice6 \
+    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory
@@ -27,6 +32,11 @@ RUN mkdir -p input output
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
+ENV OPENCV_VIDEOIO_PRIORITY_MSMF=0
+ENV PYTHONPATH=/app
 
-# Run the application
-ENTRYPOINT ["python", "main.py"] 
+# Expose Streamlit port
+EXPOSE 8501
+
+# Run the Streamlit application
+ENTRYPOINT ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"] 
