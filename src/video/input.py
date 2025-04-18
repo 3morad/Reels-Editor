@@ -33,8 +33,10 @@ class VideoInput:
             if self.video_clip is None:
                 logger.debug("Creating VideoFileClip object")
                 clip_start = time.time()
-                self.video_clip = VideoFileClip(self.input_path)
+                # Load video without audio to prevent 'NoneType' object has no attribute 'stdout' errors
+                self.video_clip = VideoFileClip(self.input_path, audio=False)
                 logger.info(f"VideoFileClip creation took {time.time() - clip_start:.2f} seconds")
+                logger.info("Audio loading disabled to prevent FFmpeg errors")
                 
             # Verify video clip has required attributes
             logger.debug("Checking video clip attributes")

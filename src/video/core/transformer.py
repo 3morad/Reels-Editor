@@ -219,6 +219,16 @@ class VideoTransformer:
     def get_transformed_clip(self) -> VideoFileClip:
         """Get the final transformed clip"""
         return self.transformed_clip or self.video_clip
+        
+    def get_transformed_clip_without_audio(self) -> VideoFileClip:
+        """Get the final transformed clip with audio removed to prevent FFmpeg errors"""
+        clip = self.transformed_clip or self.video_clip
+        try:
+            # Remove audio to avoid 'NoneType' object has no attribute 'stdout' errors
+            return clip.without_audio()
+        except Exception as e:
+            logger.warning(f"Error removing audio from clip: {e}")
+            return clip  # Return original clip if error occurs
 
     def get_effects(self) -> List[Dict[str, Any]]:
         """Get list of applied effects"""
