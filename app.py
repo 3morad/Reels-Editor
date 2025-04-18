@@ -91,8 +91,8 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload your video", type=['mp4', 'mov', 'avi'])
     
     # Number of variations
-    num_variations = st.slider("Number of Variations", 1, 50, 1, 
-                             help="Select how many different variations to generate")
+    num_variations = st.slider("Number of Variations", 1, 65, 1, 
+                             help="Select how many different variations to generate (up to 65)")
     
     # Effect selection
     st.subheader("Select Effects to Apply")

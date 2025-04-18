@@ -147,6 +147,12 @@ def main():
     # Setup project directories
     setup_directories()
     
+    # Validate inputs
+    if not args.input:
+        raise ValueError("Please upload a video file")
+    if args.variations < 1 or args.variations > 65:
+        raise ValueError("Number of variations must be between 1 and 65")
+    
     if args.batch:
         # Process all videos in input directory
         input_dir = 'input'
