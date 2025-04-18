@@ -332,7 +332,12 @@ if uploaded_file is not None:
                 if effects["Hash Modification"]:
                     # Apply all selected methods from preset
                     for hash_type in selected_methods:
-                        intensity = get_preset_default_intensity(selected_preset, hash_type)
+                        # Get base intensity from preset
+                        base_intensity = get_preset_default_intensity(selected_preset, hash_type)
+                        # Add randomization within ±20% of the base intensity
+                        intensity = base_intensity * random.uniform(0.8, 1.2)
+                        # Ensure intensity stays within valid range (0-1)
+                        intensity = max(0.1, min(1.0, intensity))
                         transformer.modify_hash(hash_type, intensity)
                         applied_effects.append(f"Hash ({hash_type}, {intensity:.2f})")
                 
