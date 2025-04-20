@@ -45,19 +45,50 @@ def validate_frame(frame: np.ndarray) -> bool:
 @timed
 @log_exceptions
 def process_frame_safely(frame: np.ndarray, processor: Callable[[np.ndarray], np.ndarray]) -> np.ndarray:
-    """Process a frame safely with error handling"""
+    """Process a frame safely with error handling, bounds‐checking and dtype normalization."""
     if not validate_frame(frame):
-        logger.error("Invalid frame format")
+        logger.error("Invalid input frame")
         return frame
-        
+
     try:
-        processed = processor(frame)
-        if not validate_frame(processed):
-            logger.error("Processor returned invalid frame format")
+        # 1) run your processor
+        result = processor(frame)
+
+        # 2) coerce into a NumPy array (no dtype yet)
+        result = np.asarray(result)
+
+        # 3) shape check
+        if result.ndim != 3 or result.shape[2] != 3:
+            logger.error(f"Processor returned wrong shape: {result.shape}")
             return frame
-        return processed
+
+        # 4) promote to a signed or float type so negatives are representable
+        if np.issubdtype(result.dtype, np.integer):
+            temp = result.astype(np.int16, copy=False)
+        elif np.issubdtype(result.dtype, np.floating):
+            temp = result.astype(np.float32, copy=False)
+            # if floats in [0.0,1.0], scale up
+            if temp.max() <= 1.0:
+                temp *= 255.0
+        else:
+            # any other dtype, just go via float32
+            temp = result.astype(np.float32)
+
+        # 5) clip all values into [0,255]
+        temp = np.clip(temp, 0, 255)
+
+        # 6) single, safe cast to uint8
+        safe_frame = temp.astype(np.uint8, copy=False)
+
+        # final sanity check
+        if not validate_frame(safe_frame):
+            logger.error("Frame invalid after normalization")
+            return frame
+
+        return safe_frame
+
     except Exception as e:
-        logger.error(f"Error processing frame: {str(e)}")
+        logger.error(f"Error processing frame: {e}")
         return frame
 
 @timed

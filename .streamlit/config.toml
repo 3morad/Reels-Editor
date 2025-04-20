@@ -1,10 +1,11 @@
 [server]
-port = 8501
-address = "0.0.0.0"
+port = 8080
+address = "localhost"
+
 
 [browser]
-serverAddress = "0.0.0.0"
-serverPort = 8501
+serverAddress = "localhost"
+serverPort = 8080
 
 [theme]
 primaryColor="#FF4B4B"

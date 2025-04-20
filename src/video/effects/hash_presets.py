@@ -12,7 +12,7 @@ HASH_PRESETS = {
         "default_intensities": {
             "metadata": 0.8,
             "delay": 0.6,
-            "glitch": 0.4
+            "glitch": 0.2
         }
     },
     "normal": {
@@ -22,9 +22,9 @@ HASH_PRESETS = {
         "default_intensities": {
             "metadata": 0.8,
             "delay": 0.6,
-            "glitch": 0.4,
-            "pixelate": 0.5,
-            "noise": 0.3
+            "glitch": 0.2,
+            "pixelate": 0.3,
+            "noise": 0.2
         }
     },
     "slow": {
@@ -34,11 +34,11 @@ HASH_PRESETS = {
         "default_intensities": {
             "metadata": 0.8,
             "delay": 0.6,
-            "glitch": 0.4,
-            "pixelate": 0.5,
+            "glitch": 0.2,
+            "pixelate": 0.3,
             "noise": 0.3,
             "watermark": 0.4,
-            "color": 0.5,
+            "color": 0.2,
             "temporal": 0.4,
             "dct": 0.3
         }

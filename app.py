@@ -1,440 +1,313 @@
 import streamlit as st
 import os
-from pathlib import Path
 import tempfile
-from src.video.input import VideoInput
-from src.video.core.transformer import VideoTransformer
 import random
 import atexit
 import zipfile
 import traceback
 from datetime import datetime
-from src.video.utils.logging_utils import configure_logger
 import time
+import logging
+
+# Optional garbage collection
+try:
+    import gc
+    gc.enable()
+except ImportError:
+    pass
+
+from concurrent.futures import ThreadPoolExecutor 
+from src.video.input import VideoInput
+from src.video.core.transformer import VideoTransformer
+from src.video.utils.logging_utils import configure_logger
 from src.video.utils.hash_calculator import calculate_video_hash, calculate_video_difference
-from src.video.effects.hash_presets import HASH_PRESETS, get_preset_methods, get_preset_default_intensity
+from src.video.effects.hash_presets import HASH_PRESETS, get_preset_default_intensity
+from src.video.export import VideoExporter
 
 # Configure logger
 logger = configure_logger("App")
+# Enable DEBUG level to see all debug logs
+logger.setLevel(logging.DEBUG)
 
-# Set page config
-st.set_page_config(
-    page_title="Reels Editor",
-    page_icon="🎬",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Default configuration settings for batch processing
+CONFIG = {
+    "batch_size": 5,               # Number of variations to process at once
+    "max_workers": 4,              # Maximum number of parallel processes
+    "batch_cooldown_seconds": 2,   # Seconds to wait between batches
+}
 
-# Custom CSS
-st.markdown("""
-    <style>
-    .main {
-        background-color: #0E1117;
-        color: #FAFAFA;
-    }
-    .stButton>button {
-        background-color: #FF4B4B;
-        color: white;
-        border-radius: 5px;
-        padding: 10px 20px;
-        font-weight: bold;
-    }
-    .stFileUploader>div>div>div>div {
-        background-color: #262730;
-        border-radius: 5px;
-    }
-    .css-1d391kg {
-        background-color: #262730;
-    }
-    .effects-info {
-        background-color: #262730;
-        padding: 10px;
-        border-radius: 5px;
-        margin-top: 10px;
-    }
-    .effect-section {
-        background-color: #1E1E1E;
-        padding: 15px;
-        border-radius: 5px;
-        margin-bottom: 10px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-# Title and description
-st.title("🎬 Reels Editor")
-st.markdown("""
-    Transform your videos into unique social media reels with AI-powered effects and variations.
-    Upload your video and customize the effects to create stunning content!
-    """)
-
-# Store temporary files to clean up later
-temp_files = []
+# Exporter and temp file tracking
+exporter = VideoExporter(output_dir="output")
+temp_files: list[str] = []
 
 def cleanup_temp_files():
-    """Clean up temporary files"""
-    for file_path in temp_files:
+    for fp in temp_files:
         try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except Exception as e:
-            logger.error(f"Error cleaning up temp file {file_path}: {str(e)}")
-
-# Register cleanup function
+            os.remove(fp)
+        except Exception:
+            pass
 atexit.register(cleanup_temp_files)
 
-# Sidebar for settings
-with st.sidebar:
-    st.header("⚙️ Settings")
-    
-    # Video upload
-    uploaded_file = st.file_uploader("Upload your video", type=['mp4', 'mov', 'avi'])
-    
-    # Number of variations
-    num_variations = st.slider("Number of Variations", 1, 65, 1, 
-                             help="Select how many different variations to generate (up to 65)")
-    
-    # Effect selection
-    st.subheader("Select Effects to Apply")
-    effects = {
-        "Zoom": st.checkbox("Zoom", value=True),
-        "Crop": st.checkbox("Crop", value=True),
-        "Filter": st.checkbox("Filter", value=True),
-        "Transition": st.checkbox("Transition", value=True),
-        "Trim": st.checkbox("Trim", value=False),
-        "Hash Modification": st.checkbox("Hash Modification", value=True)
-    }
-    
-    # Hash modification options (only show if Hash Modification is selected)
-    if effects["Hash Modification"]:
-        st.subheader("Hash Modification Options")
-        
-        # Add preset selector
-        preset_options = {
-            "fast": "Fast Processing ⚡",
-            "normal": "Balanced Processing ⚖️",
-            "slow": "Maximum Effectiveness 🎯"
-        }
-        selected_preset = st.radio(
-            "Select Processing Preset",
-            options=list(preset_options.keys()),
-            format_func=lambda x: preset_options[x],
-            index=1  # Default to "normal"
-        )
-        
-        # Show preset description
-        st.info(HASH_PRESETS[selected_preset]["description"])
-        
-        # Get methods for selected preset
-        preset_methods = HASH_PRESETS[selected_preset]["methods"]
-        
-        # Show available methods for the preset
-        selected_methods = st.multiselect(
-            "Hash Modification Methods",
-            options=preset_methods,
-            default=preset_methods,
-            help="Methods available in the selected preset"
-        )
-        
-        # Add descriptions for selected methods
-        method_descriptions = {
-            'pixelate': "Basic pixel-level modifications with subtle brightness and noise changes",
-            'glitch': "Applies glitch effect with horizontal shifts",
-            'dct': "Applies frequency domain modifications using DCT coefficients",
-            'delay': "Inserts imperceptible frame delays at the beginning of the video",
-            'watermark': "Adds a subtle pattern-based watermark that affects hash generation",
-            'noise': "Adds calibrated noise patterns below human perception threshold",
-            'color': "Modifies color space components while preserving visual appearance",
-            'metadata': "Applies subtle modifications to video metadata (FPS, resolution, duration)",
-            'temporal': "Applies temporal modifications to video frames"
-        }
-        
-        # Only show descriptions for methods in the selected preset
-        for method in selected_methods:
-            if method in method_descriptions:
-                st.info(f"**{method}**: {method_descriptions[method]}")
-    
-    # System requirements note
-    st.sidebar.markdown("""
-    ### System Requirements
-    - Tesseract OCR must be installed for text relocation features
-    - FFmpeg must be installed for video processing
-    - Python 3.8+ required
-    """)
-    
-    # Processing options
-    st.subheader("Processing Options")
-    sample_rate = st.slider("Frame Sample Rate", 1, 60, 30)
-    quality = st.select_slider("Output Quality", options=["Low", "Medium", "High"], value="Medium")
-
-def process_video(uploaded_file, num_variations=3, apply_random_effects=True):
-    """Process the uploaded video file and generate variations"""
+# Top-level variation worker (must be pickle-friendly)
+def _process_variation(args):
+    tmp_path, i, effects, selected_preset, selected_methods, quality, fps = args
     try:
-        # Create a temporary file to store the uploaded video
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            tmp_path = tmp_file.name
-        
-        # Register the temporary file for cleanup
-        temp_files.append(tmp_path)
-        
-        # Initialize video input
-        video_input = VideoInput(tmp_path)
-        
-        # Get video properties
-        properties = video_input.analyze()
-        
-        # Create transformer
-        transformer = VideoTransformer(video_input.video_clip)
-        
-        # Apply random effects if requested
-        if apply_random_effects:
-            # Apply zoom effect
-            zoom_factor = random.uniform(1.05, 1.15)
-            transformer.apply_zoom(zoom_factor)
-            
-            # Apply crop effect
-            crop_percent = random.uniform(0.05, 0.2)
-            transformer.apply_crop(crop_percent)
-            
-            # Apply filter effect
-            filter_types = ["brightness"]
-            filter_type = random.choice(filter_types)
-            # Ensure intensity is between 0 and 1, but use much lower values
-            intensity = random.uniform(0.05, 0.2)  # Reduced from 0.1-0.9 to 0.05-0.2
-            transformer.apply_filter(filter_type, intensity)
-            
-            # Apply transition effect
-            transition_types = ["fadein", "fadeout"]
-            transition_type = random.choice(transition_types)
-            duration = random.uniform(0.5, 1.5)
-            transformer.apply_transition(transition_type, duration)
-        
-        # Generate variations
-        variations = []
-        for i in range(num_variations):
-            # Apply hash modification
-            hash_types = ["pixelate", "glitch", "metadata", "dct", "delay", "watermark", "noise", "color"]
-            hash_type = random.choice(hash_types)
-            # Ensure intensity is between 0 and 1
-            intensity = random.uniform(0.1, 0.3)  # Reduced intensity for more subtle changes
-            
-            # Apply hash modification using the hash_effects module
-            transformer.modify_hash(hash_type, intensity)
-            
-            # Get transformed clip
-            transformed_clip = transformer.get_transformed_clip()
-            
-            # Create a temporary file for the variation
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as var_file:
-                var_path = var_file.name
-            
-            # Register the variation file for cleanup
-            temp_files.append(var_path)
-            
-            # Write the variation to the temporary file
-            transformed_clip.write_videofile(var_path, codec='libx264', audio_codec='aac')
-            
-            # Add the variation to the list
-            variations.append({
-                'path': var_path,
-                'effects': transformer.get_effects()
-            })
-            
-            # Reset the transformer for the next variation
-            transformer.reset()
-        
-        # Close the video input
-        video_input.close()
-        
-        return properties, variations
-    
+        vi = VideoInput(tmp_path)
+        tf = VideoTransformer(vi.video_clip)
+        # Apply effects based on selection
+        if effects.get("Zoom"): tf.apply_zoom(random.uniform(1.05, 1.15))
+        if effects.get("Crop"): tf.apply_crop(random.uniform(0.05, 0.2))
+        if effects.get("Filter"): tf.apply_filter(random.choice(["brightness", "contrast", "saturation"]), random.uniform(0.1, 0.3))
+        if effects.get("Transition"): tf.apply_transition(random.choice(["fadein", "fadeout"]), random.uniform(0.5, 1.5))
+        if effects.get("Trim"): tf.apply_trim(random.uniform(0.1, 0.3))
+        if effects.get("Hash Modification"):
+            for ht in selected_methods:
+                base = get_preset_default_intensity(selected_preset, ht)
+                inten = max(0.1, min(1.0, base * random.uniform(0.8, 1.2)))
+                tf.modify_hash(ht, inten)
+        # Bake transformations
+        clip = tf.get_transformed_clip()
+        fname = f"variation_{i+1}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        out = exporter.export_video(
+            video_clip=clip,
+            filename=fname,
+            fps=fps,
+            export_settings={
+                'preset': 'ultrafast' if quality == 'Low' else 'medium' if quality == 'Medium' else 'slow',
+                'ffmpeg_params': ['-an', '-crf', '18']
+            }
+        )
+        # Build effect string list
+        eff_strs: list[str] = []
+        for eff in tf.get_effects():
+            t = eff.get('type', '')
+            params = ", ".join(
+                f"{k}={v:.2f}" if isinstance(v, (int, float)) else f"{k}={v}"
+                for k, v in eff.items() if k != 'type'
+            )
+            eff_strs.append(f"{t}({params})" if params else t)
+        # Cleanup
+        tf.reset()
+        vi.close()
+        clip.close()
+        return out, eff_strs
     except Exception as e:
-        logger.error(f"Error processing video: {str(e)}")
-        logger.error(traceback.format_exc())
-        st.error(f"Error processing video: {str(e)}")
-        return None, None
+        # Log the error and return empty results
+        error_msg = f"Error processing variation {i+1}: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+        return None, [f"Error: {str(e)}"]
 
-# Main content area
-if uploaded_file is not None:
-    # Save uploaded file to temp directory
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
-        tmp_file.write(uploaded_file.getvalue())
-        video_path = tmp_file.name
-        temp_files.append(video_path)
-
-    # Display video preview
-    st.video(video_path)
+# Orchestrate parallel processing with batching
+def process_video(uploaded_file, num_variations, effects, selected_preset, selected_methods, quality, sample_rate):
+    # Save upload to a temp file
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
+        tmp.write(uploaded_file.getvalue())
+        tmp_path = tmp.name
     
-    # Process button
-    if st.button("Process Video", key="process_button"):
-        try:
-            # Create output directory if it doesn't exist
-            os.makedirs("output", exist_ok=True)
-            
-            # Initialize video input with validation
-            video_input = VideoInput(video_path)
-            
-            # Get hash of original video
-            try:
-                original_hash = calculate_video_hash(video_path)
-                st.info(f"Original Video Hash: {original_hash['hash']}")
-            except Exception as e:
-                logger.error(f"Error calculating original video hash: {str(e)}")
-                st.error("Failed to calculate original video hash")
-            
-            # Analyze video properties
-            video_properties = video_input.analyze()
-            st.info(f"Video Properties: Duration: {video_properties['duration']:.2f}s, Resolution: {video_properties['width']}x{video_properties['height']}, FPS: {video_properties['fps']}")
-            
-            # Process multiple variations
-            processed_videos = []
-            for i in range(num_variations):
-                st.subheader(f"Processing Variation {i+1}/{num_variations}")
-                
-                # Generate output filename
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_filename = f"output/temp_{i+1}_{timestamp}.mp4"
-                temp_filename = f"output/temp_{i+1}_{timestamp}_temp.mp4"
-                
-                # Create transformer
-                transformer = VideoTransformer(video_input.video_clip)
-                
-                # Apply effects based on selection
-                applied_effects = []
-                if effects["Zoom"]:
-                    zoom_factor = random.uniform(1.05, 1.15)
-                    transformer.apply_zoom(zoom_factor)
-                    applied_effects.append(f"Zoom ({zoom_factor:.2f}x)")
-                
-                if effects["Crop"]:
-                    crop_percent = random.uniform(0.05, 0.2)
-                    transformer.apply_crop(crop_percent)
-                    applied_effects.append(f"Crop ({crop_percent:.2f}%)")
-                
-                if effects["Filter"]:
-                    filter_type = random.choice(["brightness", "contrast", "saturation"])
-                    intensity = random.uniform(0.1, 0.3)
-                    transformer.apply_filter(filter_type, intensity)
-                    applied_effects.append(f"{filter_type.capitalize()} ({intensity:.2f})")
-                
-                if effects["Transition"]:
-                    transition_type = random.choice(["fadein", "fadeout"])
-                    duration = random.uniform(0.5, 1.5)
-                    transformer.apply_transition(transition_type, duration)
-                    applied_effects.append(f"{transition_type.capitalize()} ({duration:.2f}s)")
-                
-                if effects["Trim"]:
-                    trim_percent = random.uniform(0.1, 0.3)
-                    transformer.apply_trim(trim_percent)
-                    applied_effects.append(f"Trim ({trim_percent:.2f}%)")
-                
-                if effects["Hash Modification"]:
-                    # Apply all selected methods from preset
-                    for hash_type in selected_methods:
-                        # Get base intensity from preset
-                        base_intensity = get_preset_default_intensity(selected_preset, hash_type)
-                        # Add randomization within ±20% of the base intensity
-                        intensity = base_intensity * random.uniform(0.8, 1.2)
-                        # Ensure intensity stays within valid range (0-1)
-                        intensity = max(0.1, min(1.0, intensity))
-                        transformer.modify_hash(hash_type, intensity)
-                        applied_effects.append(f"Hash ({hash_type}, {intensity:.2f})")
-                
-                # Get transformed clip
-                transformed_clip = transformer.get_transformed_clip()
-                
-                # Write to temporary file first
-                export_success = False
-                try:
-                    transformed_clip.write_videofile(
-                        temp_filename,
-                        codec='libx264',
-                        audio_codec='aac',
-                        fps=video_properties['fps'],
-                        preset='medium' if quality == "Medium" else ('ultrafast' if quality == "Low" else 'slow')
-                    )
-                    export_success = True
-                except Exception as export_err:
-                    st.error(f"Error exporting video: {str(export_err)}")
-                    logger.error(f"Export error: {str(export_err)}")
-                    logger.error(traceback.format_exc())
-                
-                # If export was successful, move temp file to final location
-                if export_success:
-                    import os
-                    import shutil
-                    
-                    # Move temp file to final destination
-                    if os.path.exists(temp_filename):
-                        try:
-                            shutil.move(temp_filename, output_filename)
-                            processed_videos.append(output_filename)
-                        except Exception as move_err:
-                            st.error(f"Error moving temp file: {str(move_err)}")
-                            # Use the temp file if move fails
-                            processed_videos.append(temp_filename)
-                
-                # Ensure the file is fully written and closed
-                transformed_clip.close()
-                
-                # Display video properties and hash information
-                st.subheader(f"Variation {i+1} Information")
-                st.write(f"Applied Effects: {', '.join(applied_effects)}")
-                
-                # Calculate and display hash information
-                try:
-                    # Add a small delay to ensure file is fully written
-                    time.sleep(0.5)
-                    
-                    # Calculate hash with explicit file path
-                    try:
-                        variation_hash = calculate_video_hash(output_filename)
-                        difference = calculate_video_difference(video_path, output_filename)
-                    except Exception as e:
-                        logger.error(f"Error calculating variation hash: {str(e)}")
-                        st.error("Failed to calculate variation hash")
-                        continue
-                    
-                    st.write("Hash Information:")
-                    st.write(f"Original Hash: {original_hash['hash']}")
-                    st.write(f"Variation Hash: {variation_hash['hash']}")
-                    st.write(f"Hash Difference: {difference:.2f}%")
-                except Exception as e:
-                    st.error(f"Error calculating hash: {e}")
-                    logger.error(f"Hash calculation error: {e}")
-                    logger.error(traceback.format_exc())
-                
-                # Display the processed video
-                st.video(output_filename)
-            
-            # Create a zip file with all processed videos
-            if processed_videos:
-                zip_filename = f"output/variations_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-                with zipfile.ZipFile(zip_filename, 'w') as zipf:
-                    for video in processed_videos:
-                        zipf.write(video, os.path.basename(video))
-                
-                # Provide download link for the zip file
-                with open(zip_filename, 'rb') as f:
-                    st.download_button(
-                        label="Download All Variations",
-                        data=f,
-                        file_name=os.path.basename(zip_filename),
-                        mime="application/zip"
-                    )
+    # DO NOT add to temp_files list - we'll handle cleanup explicitly at the end
+    
+    # Analyze properties
+    vi = VideoInput(tmp_path)
+    props = vi.analyze()
+    fps = props['fps']
+    vi.close()
+    
+    # Prepare arguments for each variation
+    tasks = [
+        (tmp_path, i, effects, selected_preset, selected_methods, quality, fps)
+        for i in range(num_variations)
+    ]
+    
+    # Process in batches to avoid resource exhaustion
+    results = []
+    batch_size = CONFIG["batch_size"]
+    max_workers = min(CONFIG["max_workers"], exporter.cpu_count)
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for batch_idx in range(0, len(tasks), batch_size):
+        batch = tasks[batch_idx:batch_idx + batch_size]
+        status_text.text(f"Processing batch {batch_idx//batch_size + 1}/{(len(tasks) + batch_size - 1)//batch_size}...")
         
-        except Exception as e:
-            st.error(f"Error processing video: {str(e)}")
-            logger.error(f"Processing error: {str(e)}")
-            logger.error(traceback.format_exc())
-else:
-    st.info("👆 Upload a video to get started!")
+        batch_results = []
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for out, effs in pool.map(_process_variation, batch):
+                if out is not None:  # Only add successful variations
+                    batch_results.append({'path': out, 'effects': effs})
+                
+        results.extend(batch_results)
+        
+        # Update progress
+        progress = min(1.0, (batch_idx + len(batch)) / len(tasks))
+        progress_bar.progress(progress)
+        
+        # Force garbage collection between batches
+        gc.collect()
+        
+        # Small delay to let system resources recover
+        if batch_idx + batch_size < len(tasks):  # If not the last batch
+            time.sleep(CONFIG["batch_cooldown_seconds"])
+    
+    progress_bar.progress(1.0)
+    status_text.text("Processing complete!")
+    
+    return props, results, tmp_path  # Return the temp path for hash calculation
 
-# Footer
-st.markdown("---")
-st.markdown("""
-    <div style='text-align: center'>
-        <p>Made with ❤️ using Streamlit</p>
-    </div>
-    """, unsafe_allow_html=True) 
+# Function to add advanced settings
+def add_advanced_settings(sidebar):
+    with sidebar.expander("🔧 Advanced Settings"):
+        st.caption("These settings control resource usage")
+        CONFIG["batch_size"] = st.slider("Batch Size", 1, 10, CONFIG["batch_size"], 
+                                        help="Number of variations to process at once")
+        CONFIG["max_workers"] = st.slider("Max Workers", 1, min(8, exporter.cpu_count), CONFIG["max_workers"], 
+                                         help="Maximum number of parallel processes")
+        CONFIG["batch_cooldown_seconds"] = st.slider("Batch Cooldown (s)", 0, 10, CONFIG["batch_cooldown_seconds"], 
+                                                   help="Seconds to wait between batches")
+
+# Main Streamlit application
+def main():
+    # Page config
+    st.set_page_config(
+        page_title="Reels Editor",
+        page_icon="🎬",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    # CSS
+    st.markdown(
+        """
+        <style>
+        .main { background-color: #0E1117; color: #FAFAFA; }
+        .stButton>button { background-color: #FF4B4B; color: white; border-radius: 5px; padding: 10px 20px; font-weight: bold; }
+        .stFileUploader>div>div>div>div { background-color: #262730; border-radius: 5px; }
+        .css-1d391kg { background-color: #262730; }
+        .effects-info { background-color: #262730; padding: 10px; border-radius: 5px; margin-top: 10px; }
+        .effect-section { background-color: #1E1E1E; padding: 15px; border-radius: 5px; margin-bottom: 10px; }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+    # Title
+    st.title("🎬 Reels Editor")
+    st.markdown(
+        """
+        Transform your videos into unique social media reels with AI-powered effects and variations.
+        Upload your video and customize the effects to create stunning content!
+        """
+    )
+
+    # Sidebar controls
+    with st.sidebar:
+        st.header("⚙️ Settings")
+        uploaded_file = st.file_uploader("Upload your video", type=['mp4', 'mov', 'avi'])
+        num_variations = st.slider("Number of Variations", 1, 65, 1)
+        st.subheader("Select Effects to Apply")
+        effects = {k: st.checkbox(k, value=(k != 'Trim')) for k in ["Zoom", "Crop", "Filter", "Transition", "Trim", "Hash Modification"]}
+        selected_preset = None
+        selected_methods: list[str] = []
+        if effects.get("Hash Modification"):
+            preset_map = {"fast": "⚡ Fast", "normal": "⚖️ Balanced", "slow": "🎯 Maximum"}
+            selected_preset = st.radio("Preset", list(preset_map.keys()), format_func=lambda k: preset_map[k], index=1)
+            st.info(HASH_PRESETS[selected_preset]["description"])
+            selected_methods = st.multiselect(
+                "Methods",
+                options=HASH_PRESETS[selected_preset]["methods"],
+                default=HASH_PRESETS[selected_preset]["methods"]
+            )
+        st.subheader("Processing Options")
+        sample_rate = st.slider("Frame Sample Rate", 1, 60, 30)
+        quality = st.select_slider("Output Quality", options=["Low", "Medium", "High"], value="Medium")
+        
+        # Add advanced settings
+        add_advanced_settings(st.sidebar)
+
+    # Main panel
+    if uploaded_file:
+        # Preview
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
+            tmp.write(uploaded_file.getvalue())
+            vp = tmp.name
+        # Don't add preview to temp_files yet!
+        
+        st.video(vp)
+        
+        # Process button
+        if st.button("Process Video"):
+            try:
+                with st.spinner("Processing video variations..."):
+                    props, variations, input_tmp_path = process_video(
+                        uploaded_file, num_variations, effects,
+                        selected_preset, selected_methods,
+                        quality, sample_rate
+                    )
+                
+                # Filter out any failed variations
+                successful_variations = [var for var in variations if var['path'] is not None]
+                
+                if successful_variations:
+                    # Calculate hash before adding to temp_files
+                    orig_hash = calculate_video_hash(vp)['hash']
+                    st.info(f"Original Hash: {orig_hash}")
+                    
+                    st.info(
+                        f"Duration: {props['duration']:.2f}s, Resolution: {props['width']}x{props['height']}, FPS: {props['fps']}"
+                    )
+                    
+                    # Show number of successful variations
+                    if len(successful_variations) < num_variations:
+                        st.warning(f"Completed {len(successful_variations)} out of {num_variations} requested variations. Some variations failed to process.")
+                    
+                    for idx, var in enumerate(successful_variations, start=1):
+                        st.subheader(f"Variation {idx}")
+                        st.write("Effects: " + ", ".join(var['effects']))
+                        
+                        # Calculate variation hash
+                        vh = calculate_video_hash(var['path'])['hash']
+                        diff = calculate_video_difference(vp, var['path'])
+                        st.write(f"Variation Hash: {vh} (Diff: {diff:.2f}%)")
+                        
+                        st.video(var['path'])
+                    
+                    # Now create a ZIP with all variations
+                    # Ensure output directory exists
+                    os.makedirs("output", exist_ok=True)
+                    
+                    zipf = f"output/variations_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+                    with zipfile.ZipFile(zipf, 'w') as zf:
+                        for var in successful_variations:
+                            if var['path'] and os.path.exists(var['path']):
+                                zf.write(var['path'], os.path.basename(var['path']))
+                    
+                    with open(zipf, 'rb') as f:
+                        st.download_button("Download All Variations", f, os.path.basename(zipf), mime='application/zip')
+                    
+                    # NOW add temp files for cleanup AFTER all processing is done
+                    temp_files.append(vp)
+                    temp_files.append(input_tmp_path)
+                else:
+                    st.error("No successful variations were produced. Please try again with different settings.")
+                    # Clean up files if no successful variations
+                    temp_files.append(vp)
+                    temp_files.append(input_tmp_path)
+            
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
+                logger.error(f"Processing error: {str(e)}\n{traceback.format_exc()}")
+                # Clean up files on error
+                if 'vp' in locals():
+                    temp_files.append(vp)
+                if 'input_tmp_path' in locals():
+                    temp_files.append(input_tmp_path)
+        else:
+            # Add to temp_files only if process button wasn't clicked
+            temp_files.append(vp)
+    else:
+        st.info("👆 Upload a video to get started!")
+
+    st.markdown("---")
+    st.markdown("<div style='text-align:center;'>Made with ❤️ using Streamlit</div>", unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
