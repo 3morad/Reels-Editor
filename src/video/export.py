@@ -74,7 +74,7 @@ class VideoExporter:
                 'bitrate': '8000k',
                 # No audio settings
                 'threads': self.cpu_count,
-                'ffmpeg_params': ['-an', '-hwaccel', 'auto'],  # -an disables audio, enable hardware acceleration
+                'ffmpeg_params': ['-an','auto'],  # -an disables audio, enable hardware acceleration
                 'verbose': False,
                 'logger': 'bar',  # Options: bar, None
                 # Explicitly disable audio

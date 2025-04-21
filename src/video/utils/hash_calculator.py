@@ -4,8 +4,9 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any
 from ..utils.logging_utils import configure_logger, timed, log_exceptions
+from moviepy.editor import VideoFileClip
 
 # Configure logger
 logger = configure_logger("HashCalculator")
@@ -376,15 +377,252 @@ default_hasher = ConsistentVideoHasher(
 # Convenience functions that use the default hasher
 @timed
 @log_exceptions
-def calculate_video_hash(video_path: str) -> Dict:
-    """Calculate hash for a video using the default hasher."""
-    return default_hasher.calculate_hash(video_path)
+def calculate_video_hash(video_path: str, 
+                         sample_frames: int = 15,
+                         hash_method: str = 'phash') -> Dict[str, Any]:
+    """
+    Calculate a perceptual hash of a video by sampling frames.
+    
+    Args:
+        video_path: Path to the video file
+        sample_frames: Number of frames to sample
+        hash_method: Hash method to use ('phash', 'dhash', 'ahash')
+        
+    Returns:
+        Dictionary with hash and metadata
+    """
+    start_time = time.time()
+    logger.info(f"Calculating hash for: {video_path}")
+    
+    try:
+        # Open video with OpenCV for better performance
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError(f"Could not open video: {video_path}")
+        
+        # Get video properties
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        logger.info(f"Video properties: {frame_count} frames, {fps:.2f} FPS, {width}x{height}")
+        
+        # Ensure dimensions are valid (even numbers)
+        width = width if width % 2 == 0 else width - 1
+        height = height if height % 2 == 0 else height - 1
+        
+        # Determine frame positions to sample
+        if frame_count <= sample_frames:
+            frame_positions = list(range(frame_count))
+        else:
+            # Evenly distribute frame positions
+            step = frame_count / sample_frames
+            frame_positions = [int(i * step) for i in range(sample_frames)]
+        
+        logger.info(f"Using {len(frame_positions)} fixed frame positions: {frame_positions}")
+        
+        # Extract and hash each sampled frame
+        frame_hashes = []
+        
+        for pos in frame_positions:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
+            ret, frame = cap.read()
+            
+            if not ret:
+                logger.warning(f"Could not read frame at position {pos}")
+                continue
+                
+            # Ensure frame has valid dimensions for FFmpeg processing
+            if frame.shape[1] % 2 != 0 or frame.shape[0] % 2 != 0:
+                frame = frame[:frame.shape[0] - (frame.shape[0] % 2), :frame.shape[1] - (frame.shape[1] % 2)]
+            
+            # Calculate hash for this frame
+            if hash_method == 'phash':
+                frame_hash = phash(frame)
+            elif hash_method == 'dhash':
+                frame_hash = dhash(frame)
+            elif hash_method == 'ahash':
+                frame_hash = ahash(frame)
+            else:
+                frame_hash = phash(frame)  # Default to phash
+                
+            frame_hashes.append(frame_hash)
+        
+        cap.release()
+        
+        # Combine frame hashes into a single hash value
+        combined_hash = hashlib.sha256("".join(frame_hashes).encode()).hexdigest()
+        
+        logger.info(f"Hash calculation completed in {time.time() - start_time:.2f}s")
+        
+        return {
+            'hash': combined_hash,
+            'method': hash_method,
+            'frames_sampled': len(frame_hashes),
+            'total_frames': frame_count,
+            'fps': fps,
+            'resolution': f"{width}x{height}"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error calculating video hash: {e}")
+        return {
+            'hash': None,
+            'error': str(e)
+        }
 
-@timed
-@log_exceptions
 def calculate_video_difference(video1_path: str, video2_path: str) -> float:
-    """Calculate difference between two videos using the default hasher."""
-    hash1 = default_hasher.calculate_hash(video1_path)
-    hash2 = default_hasher.calculate_hash(video2_path)
-    comparison = default_hasher.compare_hashes(hash1, hash2, verbose=False)
-    return comparison['main_diff']  # Return just the main hash difference 
+    """
+    Calculate the difference percentage between two videos.
+    
+    Args:
+        video1_path: Path to the first video
+        video2_path: Path to the second video
+        
+    Returns:
+        Difference percentage (0-100)
+    """
+    try:
+        hash1 = calculate_video_hash(video1_path)
+        hash2 = calculate_video_hash(video2_path)
+        
+        if hash1['hash'] is None or hash2['hash'] is None:
+            logger.error("Could not calculate hash for one or both videos")
+            return 0.0
+            
+        # Calculate Hamming distance between hashes
+        h1 = hash1['hash']
+        h2 = hash2['hash']
+        
+        # Ensure equal length by padding shorter hash if necessary
+        if len(h1) != len(h2):
+            max_len = max(len(h1), len(h2))
+            h1 = h1.ljust(max_len, '0')
+            h2 = h2.ljust(max_len, '0')
+        
+        # Calculate Hamming distance
+        distance = sum(c1 != c2 for c1, c2 in zip(h1, h2))
+        
+        # Convert to percentage
+        max_distance = len(h1)
+        difference_pct = (distance / max_distance) * 100
+        
+        return difference_pct
+        
+    except Exception as e:
+        logger.error(f"Error calculating video difference: {e}")
+        return 0.0
+
+def phash(frame: np.ndarray, hash_size: int = 8) -> str:
+    """
+    Calculate perceptual hash for an image frame.
+    
+    Args:
+        frame: Image frame as numpy array
+        hash_size: Hash size (default 8)
+        
+    Returns:
+        Perceptual hash as hex string
+    """
+    # Convert to grayscale and resize
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Ensure dimensions are valid
+    if gray.shape[0] < 8 or gray.shape[1] < 8:
+        gray = cv2.resize(gray, (8, 8))
+    else:
+        # Resize to 32x32 for better hashing
+        gray = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA)
+    
+    # Compute DCT transform
+    dct = cv2.dct(np.float32(gray) / 255.0)
+    
+    # Extract 8x8 top-left DCT coefficients
+    dct_low = dct[:hash_size, :hash_size]
+    
+    # Calculate median for thresholding
+    median = np.median(dct_low)
+    
+    # Convert to binary hash
+    binary_hash = (dct_low > median).flatten()
+    
+    # Convert binary hash to hex string
+    hex_hash = ''
+    for i in range(0, len(binary_hash), 4):
+        chunk = binary_hash[i:i+4]
+        value = sum(v << i for i, v in enumerate(chunk))
+        hex_hash += hex(value)[2:]  # [2:] to remove '0x' prefix
+    
+    return hex_hash
+
+def dhash(frame: np.ndarray, hash_size: int = 8) -> str:
+    """
+    Calculate difference hash for an image frame.
+    
+    Args:
+        frame: Image frame as numpy array
+        hash_size: Hash size (default 8)
+        
+    Returns:
+        Difference hash as hex string
+    """
+    # Convert to grayscale and resize
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Ensure dimensions are valid
+    if gray.shape[0] < 9 or gray.shape[1] < 9:
+        # Resize to hash_size+1 to allow for difference calculation
+        gray = cv2.resize(gray, (hash_size+1, hash_size+1), interpolation=cv2.INTER_AREA)
+    else:
+        # Resize to hash_size+1 to allow for difference calculation
+        gray = cv2.resize(gray, (hash_size+1, hash_size+1), interpolation=cv2.INTER_AREA)
+    
+    # Calculate differences (horizontal)
+    diff = gray[:, 1:] > gray[:, :-1]
+    
+    # Flatten and convert to hex
+    binary_hash = diff.flatten()
+    
+    # Convert binary hash to hex string
+    hex_hash = ''
+    for i in range(0, len(binary_hash), 4):
+        if i+4 <= len(binary_hash):
+            chunk = binary_hash[i:i+4]
+            value = sum(v << i for i, v in enumerate(chunk))
+            hex_hash += hex(value)[2:]  # [2:] to remove '0x' prefix
+    
+    return hex_hash
+
+def ahash(frame: np.ndarray, hash_size: int = 8) -> str:
+    """
+    Calculate average hash for an image frame.
+    
+    Args:
+        frame: Image frame as numpy array
+        hash_size: Hash size (default 8)
+        
+    Returns:
+        Average hash as hex string
+    """
+    # Convert to grayscale and resize
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Ensure dimensions are valid
+    gray = cv2.resize(gray, (hash_size, hash_size), interpolation=cv2.INTER_AREA)
+    
+    # Calculate average
+    avg = gray.mean()
+    
+    # Calculate binary hash (above or below average)
+    binary_hash = (gray > avg).flatten()
+    
+    # Convert binary hash to hex string
+    hex_hash = ''
+    for i in range(0, len(binary_hash), 4):
+        if i+4 <= len(binary_hash):
+            chunk = binary_hash[i:i+4]
+            value = sum(v << i for i, v in enumerate(chunk))
+            hex_hash += hex(value)[2:]  # [2:] to remove '0x' prefix
+    
+    return hex_hash 

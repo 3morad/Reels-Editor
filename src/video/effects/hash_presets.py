@@ -8,11 +8,12 @@ HASH_PRESETS = {
     "fast": {
         "name": "Fast Processing",
         "description": "Quick processing with basic hash modifications",
-        "methods": ["metadata", "delay", "glitch"],
+        # Only watermark, glitch, and noise for fastest mode
+        "methods": ["watermark", "glitch", "noise"],
         "default_intensities": {
-            "metadata": 0.8,
-            "delay": 0.6,
-            "glitch": 0.2
+            "watermark": 0.4,
+            "glitch": 0.2,
+            "noise": 0.2
         }
     },
     "normal": {
@@ -44,6 +45,7 @@ HASH_PRESETS = {
         }
     }
 }
+
 
 def get_preset_methods(preset: str) -> List[str]:
     """Get the list of hash methods for a given preset."""

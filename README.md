@@ -1,101 +1,27 @@
-# Video Hash Modification Tool
+# Reels Editor - GPU Accelerated Video Processing
 
-A sophisticated tool for applying various modifications to videos while preserving visual quality, specifically designed to alter video hashes for content identification purposes. This tool implements multiple advanced techniques to modify video perceptual hashes while maintaining visual integrity.
+A high-performance video processing application for creating social media reels with AI-powered effects. This version includes GPU acceleration for significantly faster processing.
 
 ## Features
 
-### Hash Modification Techniques
-- **DCT (Discrete Cosine Transform) Modifications**
-  - Frequency domain alterations
-  - High-frequency coefficient manipulation
-  - Imperceptible visual changes
-
-- **Temporal Pattern Modifications**
-  - Frame pattern alterations
-  - Strategic frame duplication
-  - Temporal consistency preservation
-
-- **Noise Addition**
-  - PRNG-seeded noise patterns
-  - Selective noise application
-  - Edge-aware noise masking
-
-- **Geometric Transformations**
-  - Subtle perspective shifts
-  - Non-linear warping
-  - Micro-level spatial modifications
-
-- **Color Space Manipulations**
-  - LAB color space modifications
-  - Chroma component adjustments
-  - Color temperature variations
-
-- **Pixel-Level Modifications**
-  - Brightness variations
-  - Gaussian noise addition
-  - Controlled blur effects
-
-- **Frame Delay/Insertion**
-  - Strategic frame delays
-  - Patterned frame insertion
-  - Temporal consistency maintenance
-
-- **Watermarking**
-  - Pattern-based watermarks
-  - Alpha-blended overlays
-  - Position randomization
-
-### Additional Video Effects
-- Random zoom with configurable parameters
-- Dynamic cropping with percentage control
-- Multiple filter options (contrast, brightness, etc.)
-- Smooth transitions between effects
-- Advanced text detection and relocation
-
-## Technical Implementation
-
-### Core Components
-- **Video Processing Pipeline**
-  - Frame-by-frame processing
-  - Real-time modification application
-  - Quality preservation mechanisms
-
-- **Hash Generation**
-  - Perceptual hash calculation
-  - Hash difference analysis
-  - Modification effectiveness metrics
-
-- **Effect Application**
-  - Parallel processing capabilities
-  - Memory-efficient implementation
-  - Error handling and recovery
+- **GPU Acceleration**: Process videos up to 50x faster with NVIDIA GPU support
+- **Smart Resource Management**: Automatically adjusts batch sizes and processing parameters based on available resources
+- **Multiple Effect Types**: Zoom, crop, filters, transitions, and more
+- **Hash Modification**: Special effects to modify video hashes for unique content
+- **Parallel Processing**: Process multiple variations simultaneously
+- **Hardware-Accelerated Encoding**: Use NVENC for faster video exports
 
 ## Requirements
 
-### System Requirements
 - Python 3.8+
-- FFmpeg for video processing
-- Tesseract OCR for text detection
-- 4GB+ RAM recommended
-- GPU acceleration supported
-
-### Python Dependencies
-```
-opencv-python>=4.8.1
-moviepy>=1.0.3
-Pillow>=10.0.0
-streamlit>=1.28.0
-numpy>=1.24.0
-pytesseract>=0.3.10
-videohash>=2.1.9
-```
+- NVIDIA GPU with CUDA support (optional, but recommended)
 
 ## Installation
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/Reels-Editor.git
-cd Reels-Editor
+git clone https://github.com/yourusername/reels-editor.git
+cd reels-editor
 ```
 
 2. Create and activate a virtual environment:
@@ -109,67 +35,91 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-4. Install system dependencies:
-- FFmpeg: [Installation guide](https://ffmpeg.org/download.html)
-- Tesseract OCR: [Installation guide](https://github.com/tesseract-ocr/tesseract)
+4. For GPU support (NVIDIA only):
+   - Install CUDA Toolkit 11.x or 12.x from [NVIDIA's website](https://developer.nvidia.com/cuda-downloads)
+   - Uncomment and install the optional GPU dependencies in requirements.txt:
+```bash
+pip install cupy-cuda11x  # Choose version matching your CUDA installation
+pip install pycuda
+```
 
 ## Usage
 
-1. Run the application:
+1. Start the application:
 ```bash
 streamlit run app.py
 ```
 
-2. Web Interface Features:
-   - Video upload and preview
-   - Effect selection and configuration
-   - Real-time processing status
-   - Hash comparison visualization
-   - Result download options
+2. Open the application in your browser (usually http://localhost:8501)
 
-3. Processing Options:
-   - Multiple hash modification methods
-   - Custom effect parameters
+3. Upload a video file
+
+4. Configure settings:
+   - Number of variations
    - Quality settings
-   - Output format selection
+   - Effects to apply
+   - Advanced GPU settings (if available)
 
-## Configuration
+5. Click "Process Video" to start processing
 
-### Default Settings
-Modify `config.py` to adjust:
-- Default effect parameters
-- Processing thresholds
-- Output quality settings
-- Memory usage limits
+6. Download results individually or as a ZIP file
 
-### Advanced Customization
-Edit `src/video/transform.py` to:
-- Adjust modification intensities
-- Add new effect types
-- Modify processing algorithms
-- Implement custom hash methods
+## Advanced Configuration
 
-## Contributing
+### GPU Settings
 
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+- **Use GPU Acceleration**: Enable or disable GPU processing
+- **GPU Memory Threshold**: Maximum GPU memory usage before falling back to CPU (0.1-0.95)
+- **Batch Size**: Number of variations to process simultaneously
+- **Max Workers**: Maximum number of parallel processes
+- **Batch Cooldown**: Seconds to wait between batches to let system resources recover
 
-### Development Guidelines
-- Follow PEP 8 style guide
-- Include comprehensive docstrings
-- Add unit tests for new features
-- Update documentation accordingly
+### Effect Settings
+
+- **Zoom**: Magnify the video
+- **Crop**: Crop from edges and resize
+- **Filter**: Apply color/brightness/contrast adjustments
+- **Transition**: Add fade-in/fade-out effects
+- **Trim**: Remove part of the end of the video
+- **Hash Modification**: Apply special effects that modify video hash fingerprints
+
+## Troubleshooting
+
+### CUDA Issues
+
+If you encounter CUDA errors:
+
+1. Check if CUDA is properly installed:
+```bash
+python -c "import torch; print(torch.cuda.is_available())"
+```
+
+2. If you get "The library is compiled without CUDA support" error:
+   - Reinstall PyTorch with CUDA support:
+```bash
+pip uninstall torch
+pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cu117  # For CUDA 11.7
+```
+
+3. Check GPU memory usage with:
+```bash
+nvidia-smi
+```
+
+### Performance Optimization
+
+- Reduce video resolution for faster processing
+- Lower batch size if experiencing memory issues
+- Reduce quality settings for faster processing
+- Use fewer workers on systems with limited resources
 
 ## License
 
-MIT License
+[MIT License](LICENSE)
 
-## Acknowledgments
+## Acknowledgements
 
-- OpenCV for video processing capabilities
-- MoviePy for video manipulation
-- Streamlit for web interface
-- Tesseract for OCR functionality 
+- [PyTorch](https://pytorch.org/) for GPU acceleration
+- [MoviePy](https://zulko.github.io/moviepy/) for video processing
+- [Streamlit](https://streamlit.io/) for the web interface
+- [FFmpeg](https://ffmpeg.org/) for video encoding/decoding
