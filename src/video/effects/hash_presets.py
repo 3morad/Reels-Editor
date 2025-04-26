@@ -11,9 +11,9 @@ HASH_PRESETS = {
         # Only watermark, glitch, and noise for fastest mode
         "methods": ["watermark", "glitch", "noise"],
         "default_intensities": {
-            "watermark": 0.4,
-            "glitch": 0.2,
-            "noise": 0.2
+            "watermark": 0.1,
+            "glitch": 0.1,
+            "noise": 0.1
         }
     },
     "normal": {
@@ -21,11 +21,11 @@ HASH_PRESETS = {
         "description": "Balanced approach between speed and effectiveness",
         "methods": ["metadata", "delay", "glitch", "pixelate", "noise"],
         "default_intensities": {
-            "metadata": 0.8,
-            "delay": 0.6,
-            "glitch": 0.2,
-            "pixelate": 0.3,
-            "noise": 0.2
+            "metadata": 0.1,
+            "delay": 0.1,
+            "glitch": 0.1,
+            "pixelate": 0.1,
+            "noise": 0.1
         }
     },
     "slow": {
@@ -33,15 +33,15 @@ HASH_PRESETS = {
         "description": "Uses all methods for maximum hash modification",
         "methods": ["metadata", "delay", "glitch", "pixelate", "noise", "watermark", "color", "temporal", "dct"],
         "default_intensities": {
-            "metadata": 0.8,
-            "delay": 0.6,
-            "glitch": 0.2,
-            "pixelate": 0.3,
-            "noise": 0.3,
-            "watermark": 0.4,
-            "color": 0.2,
-            "temporal": 0.4,
-            "dct": 0.3
+            "metadata": 0.1,
+            "delay": 0.1,
+            "glitch": 0.1,
+            "pixelate": 0.1,
+            "noise": 0.1,
+            "watermark": 0.1,
+            "color": 0.1,
+            "temporal": 0.1,
+            "dct": 0.1
         }
     }
 }

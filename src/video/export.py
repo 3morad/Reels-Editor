@@ -6,6 +6,7 @@ from moviepy.editor import VideoFileClip, AudioFileClip, CompositeAudioClip
 import time
 import logging
 import multiprocessing
+import shutil
 
 # Configure logging
 logger = logging.getLogger("VideoExporter")
@@ -34,133 +35,121 @@ class VideoExporter:
             json.dump(metadata, f, indent=4)
 
     def export_video(self, 
-                    video_clip: VideoFileClip, 
+                    video_clip, 
                     audio_clip: AudioFileClip = None, 
                     filename: str = None, 
                     fps: int = None,
                     export_settings: Dict[str, Any] = None) -> str:
         """
-        Export a video to file with optimized settings.
-        
-        Args:
-            video_clip: The video clip to export
-            audio_clip: Optional audio clip to add (ignored to prevent FFmpeg errors)
-            filename: Output filename (without extension)
-            fps: Frames per second
-            export_settings: Dictionary with export settings
-            
-        Returns:
-            Path to the exported video file
+        Export a video to file with compatible settings.
+        If video_clip is a file path (str), just move/copy it to the output directory.
+        If video_clip is a VideoFileClip, use MoviePy export logic.
         """
         export_start = time.time()
         logger.info("Starting video export process (audio disabled)")
         
-        if video_clip is None:
-            logger.error("Video clip is None, cannot export")
-            raise ValueError("Video clip cannot be None")
-            
-        try:
-            # Remove audio from clip to prevent 'NoneType' object has no attribute 'stdout' errors
-            try:
-                video_clip = video_clip.without_audio()
-                logger.info("Audio removed from clip to prevent FFmpeg errors")
-            except Exception as e:
-                logger.warning(f"Error removing audio from clip: {e}")
-            
-            # Default settings for optimal performance - audio disabled
-            default_settings = {
-                'codec': 'libx264',
-                'preset': 'ultrafast',  # Options: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
-                'bitrate': '8000k',
-                # No audio settings
-                'threads': self.cpu_count,
-                'ffmpeg_params': ['-an','auto'],  # -an disables audio, enable hardware acceleration
-                'verbose': False,
-                'logger': 'bar',  # Options: bar, None
-                # Explicitly disable audio
-                'audio': False,
-            }
-            
-            # Override with custom settings if provided
-            if export_settings:
-                default_settings.update(export_settings)
-                # Force audio off regardless of custom settings
-                default_settings['audio'] = False
-                if '-an' not in default_settings.get('ffmpeg_params', []):
-                    default_settings['ffmpeg_params'] = default_settings.get('ffmpeg_params', []) + ['-an']
-                
+        # If video_clip is a file path, just move/copy it
+        if isinstance(video_clip, str):
             # Generate output filename if not provided
             if not filename:
                 timestamp = int(time.time())
                 filename = f"export_{timestamp}"
-                
             # Ensure filename has no extension
             filename = os.path.splitext(filename)[0]
             output_path = os.path.join(self.output_dir, f"{filename}.mp4")
-            
-            # Set fps if provided
-            if fps:
-                video_clip = video_clip.set_fps(fps)
+            logger.info(f"Copying FFmpeg output file to: {output_path}")
+            shutil.move(video_clip, output_path)
+            logger.info(f"Exported file: {output_path}")
+            return output_path
+        
+        # Handle VideoFileClip objects
+        else:
+            if video_clip is None:
+                logger.error("Video clip is None, cannot export")
+                raise ValueError("Video clip cannot be None")
                 
-            # Audio is ignored - log this
-            if audio_clip:
-                logger.info("Audio clip provided but ignored to prevent FFmpeg errors")
-                    
-            # Log export settings
-            logger.info(f"Exporting video: {output_path}")
-            logger.info(f"Video duration: {video_clip.duration:.2f}s")
-            logger.info(f"Video dimensions: {video_clip.w}x{video_clip.h}")
-            logger.info(f"Video FPS: {video_clip.fps}")
-            logger.info(f"Export settings: {default_settings}")
-            
-            # Use temp file for safer export
-            import tempfile
-            import shutil
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
-                temp_path = temp_file.name
-            
             try:
-                # First try with hardware acceleration
-                logger.info(f"Exporting to temp file: {temp_path}")
-                video_clip.write_videofile(
-                    temp_path,
-                    fps=video_clip.fps if not fps else fps,
-                    codec=default_settings['codec'],
-                    preset=default_settings['preset'],
-                    bitrate=default_settings['bitrate'],
-                    threads=default_settings['threads'],
-                    ffmpeg_params=default_settings['ffmpeg_params'],
-                    verbose=default_settings['verbose'],
-                    logger=default_settings['logger'],
-                    audio=False  # Explicitly disable audio
-                )
+                # First, ensure dimensions are even (required by H.264)
+                width = video_clip.w
+                height = video_clip.h
                 
-                # Move temp file to final destination
-                logger.info(f"Moving temp file to: {output_path}")
-                shutil.move(temp_path, output_path)
+                # Round to nearest even number
+                if width % 2 != 0:
+                    width = (width // 2) * 2
+                if height % 2 != 0:
+                    height = (height // 2) * 2
+                    
+                # Resize if dimensions changed
+                if width != video_clip.w or height != video_clip.h:
+                    logger.info(f"Resizing video from {video_clip.w}x{video_clip.h} to {width}x{height} for codec compatibility")
+                    video_clip = video_clip.resize(width=width, height=height)
                 
-            except Exception as e:
-                logger.warning(f"First export attempt failed, trying simpler settings: {e}")
-                
-                # Clean up the temp file if it exists
+                # Remove audio from clip to prevent 'NoneType' object has no attribute 'stdout' errors
                 try:
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
-                except:
-                    pass
+                    video_clip = video_clip.without_audio()
+                    logger.info("Audio removed from clip to prevent FFmpeg errors")
+                except Exception as e:
+                    logger.warning(f"Error removing audio from clip: {e}")
                 
-                # Create a new temp file
+                # Default settings for maximum compatibility
+                default_settings = {
+                    'codec': 'libx264',
+                    'preset': 'medium',  # Use medium preset for balance
+                    'bitrate': '2000k',  # Lower bitrate for better compatibility
+                    'threads': self.cpu_count,
+                    'ffmpeg_params': [
+                        '-an',  # Disable audio
+                        '-pix_fmt', 'yuv420p',  # Standard pixel format
+                        '-profile:v', 'baseline',  # Most compatible H.264 profile
+                        '-level', '3.0',  # Compatible level
+                        '-movflags', '+faststart',  # Enable fast start for web playback
+                        '-vf', f'scale={width}:{height}'  # Force dimensions
+                    ],
+                    'verbose': False,
+                    'logger': 'bar',
+                    'audio': False,
+                    'write_logfile': False
+                }
+                
+                # Override with custom settings if provided, but keep essential compatibility settings
+                if export_settings:
+                    # Only update non-critical settings
+                    for key in ['preset', 'bitrate', 'threads', 'verbose', 'logger']:
+                        if key in export_settings:
+                            default_settings[key] = export_settings[key]
+                    
+                # Generate output filename if not provided
+                if not filename:
+                    timestamp = int(time.time())
+                    filename = f"export_{timestamp}"
+                    
+                # Ensure filename has no extension
+                filename = os.path.splitext(filename)[0]
+                output_path = os.path.join(self.output_dir, f"{filename}.mp4")
+                
+                # Set fps if provided, otherwise ensure it's a standard value
+                if fps:
+                    video_clip = video_clip.set_fps(fps)
+                elif video_clip.fps > 60:
+                    video_clip = video_clip.set_fps(60)  # Cap at 60fps for compatibility
+                    
+                # Log export settings
+                logger.info(f"Exporting video: {output_path}")
+                logger.info(f"Video duration: {video_clip.duration:.2f}s")
+                logger.info(f"Video dimensions: {width}x{height}")
+                logger.info(f"Video FPS: {video_clip.fps}")
+                logger.info(f"Export settings: {default_settings}")
+                
+                # Use temp file for safer export
+                import tempfile
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
                     temp_path = temp_file.name
                 
-                # Fall back to CPU-only encoding with ultrasimple settings
-                default_settings['ffmpeg_params'] = ['-an']  # Audio disabled
-                default_settings['preset'] = 'ultrafast'  # Fastest encoding
-                
                 try:
+                    # Export with compatible settings
                     video_clip.write_videofile(
                         temp_path,
-                        fps=video_clip.fps if not fps else fps,
+                        fps=video_clip.fps,
                         codec=default_settings['codec'],
                         preset=default_settings['preset'],
                         bitrate=default_settings['bitrate'],
@@ -168,14 +157,30 @@ class VideoExporter:
                         ffmpeg_params=default_settings['ffmpeg_params'],
                         verbose=default_settings['verbose'],
                         logger=default_settings['logger'],
-                        audio=False  # Explicitly disable audio
+                        audio=False,
+                        write_logfile=False
                     )
                     
                     # Move temp file to final destination
-                    shutil.move(temp_path, output_path)
+                    logger.info(f"Moving temp file to: {output_path}")
+                    # Add a small delay to ensure file is fully written and released
+                    time.sleep(0.2)
                     
-                except Exception as e2:
-                    logger.error(f"All export attempts failed: {e2}")
+                    # Try a few times to move the file in case of file locking issues
+                    max_attempts = 3
+                    for attempt in range(max_attempts):
+                        try:
+                            shutil.move(temp_path, output_path)
+                            break
+                        except PermissionError as e:
+                            if attempt < max_attempts - 1:
+                                logger.warning(f"File access error on attempt {attempt+1}, retrying in 0.5s: {e}")
+                                time.sleep(0.5)  # Wait a bit longer between retries
+                            else:
+                                raise  # Re-raise if all attempts failed
+                    
+                except Exception as e:
+                    logger.error(f"Export failed: {e}")
                     # Clean up the temp file
                     try:
                         if os.path.exists(temp_path):
@@ -183,18 +188,22 @@ class VideoExporter:
                     except:
                         pass
                     raise
+                    
+                logger.info(f"Video export completed successfully in {time.time() - export_start:.2f}s")
+                logger.info(f"Exported file: {output_path}")
                 
-            logger.info(f"Video export completed successfully in {time.time() - export_start:.2f}s")
-            logger.info(f"Exported file: {output_path}")
-            
-            return output_path
-            
-        except Exception as e:
-            logger.error(f"Error exporting video: {e}", exc_info=True)
-            raise
-        finally:
-            # No audio resources to clean up
-            pass
+                return output_path
+                
+            except Exception as e:
+                logger.error(f"Error exporting video: {e}", exc_info=True)
+                raise
+            finally:
+                # Clean up resources - ONLY for VideoFileClip objects!
+                try:
+                    if not isinstance(video_clip, str):
+                        video_clip.close()
+                except:
+                    pass
 
     def batch_export(self, video_clips: list, original_filename: str,
                     metadata_list: Optional[list] = None) -> list:

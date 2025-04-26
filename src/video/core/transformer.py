@@ -4,9 +4,12 @@ import logging
 import time
 import random
 import numpy as np
+import subprocess
+import tempfile
 from typing import Optional, List, Dict, Any, Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from functools import partial
+import uuid
 
 # Try importing GPU libraries with graceful fallbacks
 try:
@@ -15,7 +18,7 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-from ..effects import basic_effects, hash_effects, gpu_effects
+from ..effects import ffmpeg_basic_effects, ffmpeg_hash_effects
 from ..utils.logging_utils import configure_logger
 from ..utils.gpu_manager import gpu_manager
 
@@ -61,7 +64,7 @@ def _trim_clip(clip: VideoFileClip, trim_percent: float) -> VideoFileClip:
     return clip.subclip(0, end_t)
 
 class VideoTransformer:
-    def __init__(self, video_clip: VideoFileClip):
+    def __init__(self, video_clip: VideoFileClip, input_path: Optional[str] = None):
         """Initialize transformer; register per-frame and clip-level effects."""
         self.start_time = time.time()
         logger.info("=== VideoTransformer Initialization ===")
@@ -97,14 +100,20 @@ class VideoTransformer:
                 self.video_clip = video_clip
                 self.original_clip = None
 
+        # Store the original input file path if provided
+        self.input_path = input_path
+
         # Queues of transforms
         self._frame_funcs: List[Callable[[np.ndarray], np.ndarray]] = []
         self._clip_funcs: List[Callable[[VideoFileClip], VideoFileClip]] = []
         self.effects: List[Dict[str, Any]] = []
         self.transformed_clip: Optional[VideoFileClip] = None
         
+        # FFmpeg command parameters
+        self.ffmpeg_params: List[str] = []
+        
         # GPU settings
-        self.use_gpu = gpu_effects.gpu_effects_available()
+        self.use_gpu = TORCH_AVAILABLE and torch.cuda.is_available()
         if self.use_gpu:
             logger.info("GPU acceleration enabled for frame processing")
         else:
@@ -125,206 +134,253 @@ class VideoTransformer:
         self.effects.clear()
         self._frame_funcs.clear()
         self._clip_funcs.clear()
+        self.ffmpeg_params.clear()
         
         # Clean up GPU resources
         if self.use_gpu:
             gpu_manager.cleanup()
 
-    def apply_zoom(self, zoom_factor: float = 1.2) -> 'VideoTransformer':
-        logger.debug(f"Registering zoom: factor={zoom_factor}")
-        if self.use_gpu:
-            self._frame_funcs.append(partial(gpu_effects.process_zoom_frame, zoom_factor=zoom_factor))
-        else:
-            self._frame_funcs.append(partial(basic_effects.process_zoom_frame, zoom_factor=zoom_factor))
-        self.effects.append({'type':'zoom','zoom_factor':zoom_factor})
-        return self
-
-    def apply_crop(self, crop_percent: float = 0.1) -> 'VideoTransformer':
+    def apply_crop(self, crop_percent: float = None) -> 'VideoTransformer':
+        # Subtle crop: 1-3%
+        crop_percent = crop_percent if crop_percent is not None else random.uniform(0.01, 0.03)
         logger.debug(f"Registering crop: percent={crop_percent}")
-        if self.use_gpu:
-            self._frame_funcs.append(partial(gpu_effects.process_crop_frame, crop_percent=crop_percent))
-        else:
-            self._frame_funcs.append(partial(basic_effects.process_crop_frame, crop_percent=crop_percent))
+        self.ffmpeg_params.extend(ffmpeg_basic_effects.get_crop_params(crop_percent))
         self.effects.append({'type':'crop','crop_percent':crop_percent})
         return self
 
-    def apply_filter(self, filter_type: str, intensity: float = 1.0) -> 'VideoTransformer':
-        logger.debug(f"Registering filter: type={filter_type}, intensity={intensity}")
-        if self.use_gpu:
-            self._frame_funcs.append(partial(gpu_effects.process_filter_frame, filter_type=filter_type, intensity=intensity))
+    def apply_zoom(self, zoom_factor: float = None) -> 'VideoTransformer':
+        # Subtle zoom: 1.01-1.05
+        zoom_factor = zoom_factor if zoom_factor is not None else random.uniform(1.01, 1.05)
+        logger.debug(f"Registering zoom: factor={zoom_factor}")
+        self.ffmpeg_params.extend(ffmpeg_basic_effects.get_zoom_params(zoom_factor))
+        self.effects.append({'type':'zoom','zoom_factor':zoom_factor})
+        return self
+
+    def apply_filter(self, filter_type: str = None, intensity: float = None) -> 'VideoTransformer':
+        # Only brightness or contrast, small random intensity
+        filter_type = filter_type if filter_type in ['brightness', 'contrast'] else random.choice(['brightness', 'contrast'])
+        # Neutral is 0.0 for brightness, 1.0 for contrast; we want a small deviation
+        if filter_type == 'brightness':
+            intensity = intensity if intensity is not None else random.uniform(0.45, 0.55)  # 0.5 is neutral
         else:
-            self._frame_funcs.append(partial(basic_effects.process_filter_frame, filter_type=filter_type, intensity=intensity))
+            intensity = intensity if intensity is not None else random.uniform(0.95, 1.05)  # 1.0 is neutral
+        logger.debug(f"Registering filter: type={filter_type}, intensity={intensity}")
+        self.ffmpeg_params.extend(ffmpeg_basic_effects.get_filter_params(filter_type, intensity))
         self.effects.append({'type':'filter','filter_type':filter_type,'intensity':intensity})
         return self
 
-    def apply_transition(self, transition_type: str, duration: float = 1.0) -> 'VideoTransformer':
-        logger.debug(f"Registering transition: {transition_type}({duration})")
-        self._clip_funcs.append(partial(_transition_clip, transition_type=transition_type, duration=duration))
+    def apply_transition(self, transition_type: str = None, duration: float = None) -> 'VideoTransformer':
+        # Fadein or fadeout, 0.1-0.5s
+        transition_type = transition_type if transition_type in ['fadein', 'fadeout'] else random.choice(['fadein', 'fadeout'])
+        duration = duration if duration is not None else random.uniform(0.1, 0.5)
+        # Use trimmed duration if trim is applied, else use original
+        video_duration = None
+        for param in self.ffmpeg_params:
+            if param == '-t':
+                try:
+                    video_duration = float(self.ffmpeg_params[self.ffmpeg_params.index(param)+1])
+                except Exception:
+                    pass
+        if video_duration is None and hasattr(self.video_clip, 'duration'):
+            video_duration = self.video_clip.duration
+        logger.debug(f"Registering transition: {transition_type}({duration}), video_duration={video_duration}")
+        self.ffmpeg_params.extend(ffmpeg_basic_effects.get_transition_params(transition_type, duration, video_duration=video_duration))
         self.effects.append({'type':'transition','transition_type':transition_type,'duration':duration})
         return self
 
-    def apply_trim(self, trim_percent: float = 0.1) -> 'VideoTransformer':
+    def apply_trim(self, trim_percent: float = None) -> 'VideoTransformer':
+        # Trim 5-10% from end
+        trim_percent = trim_percent if trim_percent is not None else random.uniform(0.05, 0.1)
         logger.debug(f"Registering trim: percent={trim_percent}")
-        self._clip_funcs.append(partial(_trim_clip, trim_percent=trim_percent))
+        duration = self.video_clip.duration if hasattr(self.video_clip, 'duration') else None
+        self.ffmpeg_params.extend(ffmpeg_basic_effects.get_trim_params(trim_percent, duration=duration))
         self.effects.append({'type':'trim','trim_percent':trim_percent})
         return self
 
-    def modify_hash(self, hash_type: str, intensity: float = 1.0) -> 'VideoTransformer':
-        logger.debug(f"Registering hash modification: type={hash_type}, intensity={intensity}")
-        per_frame = {'pixelate','glitch','dct','noise','color','watermark'}
-        clip_level = {'metadata','delay','temporal'}
-        if hash_type in per_frame:
-            self._frame_funcs.append(partial(hash_effects.process_hash_frame_gpu, hash_type=hash_type, intensity=intensity))
-        elif hash_type in clip_level:
-            func_map = {
-                'metadata': hash_effects.process_metadata_clip,
-                'delay':    hash_effects.process_delay_clip,
-                'temporal': hash_effects.process_temporal_clip
-            }
-            self._clip_funcs.append(partial(func_map[hash_type], intensity=intensity))
-        else:
-            logger.warning(f"Unknown hash_type: {hash_type}")
-        self.effects.append({'type':hash_type,'intensity':intensity})
+    def modify_hash(self, hash_type: str, intensity: float = 1.0, preset: str = None) -> 'VideoTransformer':
+        """Apply a single hash modification effect."""
+        logger.debug(f"Registering hash modification: type={hash_type}, intensity={intensity}, preset={preset}")
+        
+        # If preset is provided, use its default intensity if not explicitly overridden
+        if preset and intensity == 1.0:  # Only use preset intensity if not explicitly set
+            try:
+                from ..effects.hash_presets import get_preset_default_intensity
+                intensity = get_preset_default_intensity(preset, hash_type)
+                logger.debug(f"Using preset intensity {intensity} for {hash_type} from preset {preset}")
+            except ValueError as e:
+                logger.warning(f"Could not get preset intensity: {e}. Using default intensity.")
+        
+        self.ffmpeg_params.extend(ffmpeg_hash_effects.get_hash_params(hash_type, intensity))
+        self.effects.append({'type': hash_type, 'intensity': intensity, 'preset': preset})
+        return self
+
+    def apply_hash_preset(self, preset: str, methods: List[str] = None) -> 'VideoTransformer':
+        """Apply all hash modifications from a preset.
+        
+        Args:
+            preset: The preset to use ('fast', 'normal', or 'slow')
+            methods: Optional list of specific methods to apply. If None, applies all methods from preset.
+        """
+        logger.debug(f"Applying hash preset: {preset} with methods: {methods}")
+        
+        try:
+            from ..effects.hash_presets import get_preset_methods, get_preset_default_intensity
+            
+            # Get all methods for this preset
+            preset_methods = get_preset_methods(preset)
+            
+            # If specific methods requested, filter to only those methods
+            if methods:
+                preset_methods = [m for m in preset_methods if m in methods]
+                if not preset_methods:
+                    logger.warning(f"None of the requested methods {methods} found in preset {preset}")
+                    return self
+            
+            # Apply each method with its preset intensity
+            for method in preset_methods:
+                try:
+                    intensity = get_preset_default_intensity(preset, method)
+                    self.modify_hash(method, intensity, preset)
+                except ValueError as e:
+                    logger.warning(f"Skipping method {method}: {e}")
+                    continue
+                
+        except ValueError as e:
+            logger.error(f"Error applying preset {preset}: {e}")
+            
         return self
 
     def bake_gpu(self) -> VideoFileClip:
         """Process frames using GPU batch processing for efficiency."""
-        if not TORCH_AVAILABLE or not gpu_manager.has_cuda:
-            logger.warning("GPU processing requested but not available, falling back to CPU")
-            return self.bake_parallel()
-            
-        fps = self.video_clip.fps
+        # For FFmpeg implementation, we'll use the same method as bake_parallel
+        # since FFmpeg handles the processing internally
+        return self.bake_parallel()
+
+    def bake_parallel(self, workers: Optional[int] = None) -> str:
+        """Process video using FFmpeg for effects and return output file path (no MoviePy reload)."""
+        logger.info("Processing video with FFmpeg effects")
         
-        # Get video dimensions for batch size calculation
-        height, width = self.video_clip.h, self.video_clip.w
+        # Use original input file if no MoviePy effects are queued
+        use_original_input = (
+            self.input_path is not None and
+            not self._frame_funcs and
+            not self._clip_funcs
+        )
+        if use_original_input:
+            input_path = self.input_path
+        else:
+            # Create temporary input file using MoviePy
+            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as input_temp:
+                input_path = input_temp.name
+                self.video_clip.write_videofile(input_path, codec='libx264', audio=False, 
+                                               preset='ultrafast', threads=workers or os.cpu_count())
         
-        # Calculate optimal batch size based on GPU memory
-        batch_size = gpu_manager.get_optimal_batch_size(height, width)
-        logger.info(f"Using GPU batch size of {batch_size} for {width}x{height} frames")
+        # Create a unique output path to prevent file conflicts between processes
+        unique_id = str(uuid.uuid4())[:8]  # Use first 8 chars of UUID for brevity
+        output_path = os.path.join(os.path.dirname(input_path), f"output_{int(time.time())}_{unique_id}.mp4")
         
-        # Extract all frames first to avoid memory issues with random frame access
-        logger.info("Extracting frames for GPU processing")
-        all_frames = list(self.video_clip.iter_frames(fps=fps, dtype='uint8'))
-        total_frames = len(all_frames)
-        logger.info(f"Processing {total_frames} frames with {len(self._frame_funcs)} frame funcs")
+        # Build FFmpeg command with saved effects
+        success = False
+        attempts = 0
+        max_attempts = 2  # Try twice with original effects, then fallback
         
-        # Process in batches
-        processed_frames = []
-        
-        for i in range(0, total_frames, batch_size):
-            batch_end = min(i + batch_size, total_frames)
-            logger.debug(f"Processing GPU batch {i//batch_size + 1}/{(total_frames + batch_size - 1)//batch_size}")
-            
-            # Process frames in current batch with GPU
-            batch_frames = all_frames[i:batch_end]
-            
-            # Convert to tensors for GPU processing
+        while not success and attempts < max_attempts + 1:
             try:
-                # Process frames sequentially using GPU
-                batch_processed = []
-                for frame in batch_frames:
-                    # Apply each frame function
-                    result = frame
-                    for fn in self._frame_funcs:
-                        try:
-                            result = fn(result)
-                        except Exception as e:
-                            logger.warning(f"Error in {getattr(fn, '__name__', repr(fn))}: {e}")
-                            # If the function has a fallback CPU implementation included in it,
-                            # it should handle the fallback internally. Otherwise, just pass through.
-                            pass
-                    batch_processed.append(result)
+                # Build FFmpeg command
+                cmd = ['ffmpeg', '-y', '-i', input_path]
                 
-                # Add processed batch to results
-                processed_frames.extend(batch_processed)
-                
-                # Force GPU cleanup
-                if TORCH_AVAILABLE and gpu_manager.has_cuda:
-                    gpu_manager.cleanup()
+                if attempts < max_attempts:
+                    # Use original effects for first attempts
+                    # Collect and combine video filters
+                    video_filters = []
+                    other_params = []
+                    for param in self.ffmpeg_params:
+                        if param == '-vf':
+                            continue
+                        elif isinstance(param, str) and '=' in param:
+                            video_filters.append(param)
+                        else:
+                            other_params.append(param)
                     
-            except Exception as e:
-                logger.error(f"Error in GPU batch processing: {e}")
-                logger.warning("Falling back to CPU for this batch")
-                
-                # Process this batch on CPU
-                batch_processed = []
-                for frame in batch_frames:
-                    # Apply frame functions on CPU
-                    result = frame
-                    for fn in self._frame_funcs:
-                        try:
-                            # Check if this is a partial function
-                            if isinstance(fn, partial):
-                                # Create a CPU version with the same parameters
-                                fn_name = fn.func.__name__
-                                # If this is a GPU effect, find equivalent CPU version
-                                if 'gpu_effects' in str(fn.func):
-                                    cpu_fn_name = fn_name.replace('process_', '')
-                                    cpu_fn = getattr(basic_effects, f"process_{cpu_fn_name}", None)
-                                    if cpu_fn:
-                                        result = cpu_fn(result, **fn.keywords)
-                                    else:
-                                        result = fn(result)
-                                else:
-                                    result = fn(result)
-                            else:
-                                result = fn(result)
-                        except Exception as inner_e:
-                            logger.warning(f"CPU fallback error in {getattr(fn, '__name__', repr(fn))}: {inner_e}")
-                            # Just pass through if CPU also fails
-                            pass
-                    batch_processed.append(result)
-                
-                processed_frames.extend(batch_processed)
-                
-            # Log progress
-            logger.debug(f"Processed {batch_end}/{total_frames} frames ({batch_end/total_frames*100:.1f}%)")
-        
-        logger.info("GPU frame processing complete, building clip")
-        
-        # Build clip from processed frames
-        clip = ImageSequenceClip(processed_frames, fps=fps)
-        
-        # Apply clip-level effects
-        for fn in self._clip_funcs:
-            try:
-                # Safely get function name for logging
-                if isinstance(fn, partial):
-                    name = fn.func.__name__
+                    # Combine all video filters into a single filter chain
+                    if video_filters:
+                        # Always ensure even dimensions at the end for codec compatibility
+                        video_filters.append("scale='if(mod(iw,2),iw-1,iw)':'if(mod(ih,2),ih-1,ih)'")
+                        video_filters.append("format=yuv420p")
+                        cmd.extend(['-vf', ','.join(video_filters)])
+                    
+                    # Add any other parameters
+                    cmd.extend(other_params)
                 else:
-                    name = getattr(fn, '__name__', repr(fn))
-                logger.info(f"Applying clip func: {name}")
-                clip = fn(clip)
+                    # Last attempt: use guaranteed fallback effect
+                    from ..effects.ffmpeg_hash_effects import get_fallback_params
+                    fallback_params = get_fallback_params()
+                    
+                    # Extract the filter part
+                    if fallback_params and fallback_params[0] == '-vf':
+                        filter_value = fallback_params[1]
+                        # Add compatibility filters
+                        filters = [
+                            filter_value,
+                            "scale='if(mod(iw,2),iw-1,iw)':'if(mod(ih,2),ih-1,ih)'",
+                            "format=yuv420p"
+                        ]
+                        cmd.extend(['-vf', ','.join(filters)])
+                    logger.warning("Using fallback effects after previous failures")
+                
+                # Explicitly disable audio and only map video stream
+                cmd.extend(['-an', '-map', '0:v:0'])
+                
+                # Add output path
+                cmd.append(output_path)
+                
+                # Execute FFmpeg command
+                logger.info(f"Running FFmpeg command (attempt {attempts+1}): {' '.join(cmd)}")
+                result = subprocess.run(cmd, check=True, capture_output=True)
+                logger.info(f"FFmpeg processing completed successfully (return code: {result.returncode})")
+                
+                # Verify output file exists
+                if not os.path.exists(output_path):
+                    logger.error(f"FFmpeg output file doesn't exist: {output_path}")
+                    logger.error(f"FFmpeg stdout: {result.stdout.decode() if result.stdout else 'None'}")
+                    logger.error(f"FFmpeg stderr: {result.stderr.decode() if result.stderr else 'None'}")
+                    raise RuntimeError(f"FFmpeg completed but output file {output_path} not found")
+                    
+                # Verify output file has content
+                file_size = os.path.getsize(output_path)
+                if file_size < 1000:  # Less than 1KB is suspicious
+                    logger.warning(f"FFmpeg output file is very small: {file_size} bytes")
+                    if attempts < max_attempts:
+                        raise RuntimeError("Output file too small, trying again")
+                
+                success = True  # If we get here, all checks passed
+                
             except Exception as e:
-                logger.warning(f"Error applying clip effect {name}: {e}")
-                # Continue with other effects
-            
-        self.transformed_clip = clip
-        logger.info("GPU bake complete")
-        return clip
+                attempts += 1
+                error_msg = str(e)
+                if isinstance(e, subprocess.CalledProcessError) and e.stderr:
+                    error_msg = e.stderr.decode() if hasattr(e.stderr, 'decode') else str(e.stderr)
+                
+                if attempts <= max_attempts:
+                    logger.warning(f"FFmpeg attempt {attempts} failed: {error_msg}")
+                    # Generate a new unique output path for the next attempt
+                    unique_id = str(uuid.uuid4())[:8]
+                    output_path = os.path.join(os.path.dirname(input_path), f"output_{int(time.time())}_{unique_id}.mp4")
+                else:
+                    logger.error(f"All FFmpeg attempts failed: {error_msg}")
+                    raise RuntimeError(f"FFmpeg processing failed after {attempts} attempts: {error_msg}")
+        
+        # Clean up temporary input file if we created it
+        if not use_original_input:
+            try:
+                os.unlink(input_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary input file: {e}")
+        
+        # Return the output file path directly (no MoviePy reload)
+        return output_path
 
-    def bake_parallel(self, workers: Optional[int] = None) -> VideoFileClip:
-        fps = self.video_clip.fps
-        frames = list(self.video_clip.iter_frames(fps=fps, dtype='uint8'))
-        logger.info(f"Baking {len(frames)} frames with {len(self._frame_funcs)} frame funcs")
-        max_workers = workers or max(1, os.cpu_count()-1)
-        with ProcessPoolExecutor(max_workers=max_workers, initializer=_init_worker, initargs=(self._frame_funcs,)) as pool:
-            processed = list(pool.map(_apply_global_frame_funcs, frames))
-        logger.info("Frame processing complete, building clip")
-        clip = ImageSequenceClip(processed, fps=fps)
-        for fn in self._clip_funcs:
-            # Safely get function name for logging
-            if isinstance(fn, partial):
-                name = fn.func.__name__
-            else:
-                name = getattr(fn, '__name__', repr(fn))
-            logger.info(f"Applying clip func: {name}")
-            clip = fn(clip)
-        self.transformed_clip = clip
-        logger.info("Parallel bake complete")
-        return clip
-
-    def get_transformed_clip(self) -> VideoFileClip:
+    def get_transformed_clip(self) -> str:
         if self.transformed_clip is None:
             if self.use_gpu and gpu_manager.should_use_gpu():
                 return self.bake_gpu()
