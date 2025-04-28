@@ -260,29 +260,31 @@ class VideoTransformer:
         """Process video using FFmpeg for effects and return output file path (no MoviePy reload)."""
         logger.info("Processing video with FFmpeg effects")
         
-        # Use original input file if no MoviePy effects are queued
-        use_original_input = (
-            self.input_path is not None and
-            not self._frame_funcs and
-            not self._clip_funcs
-        )
-        if use_original_input:
-            input_path = self.input_path
-        else:
-            # Create temporary input file using MoviePy
-            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as input_temp:
-                input_path = input_temp.name
-                self.video_clip.write_videofile(input_path, codec='libx264', audio=False, 
-                                               preset='ultrafast', threads=workers or os.cpu_count())
+        # Use original input path if available, or create a temporary copy
+        use_original_input = bool(self.input_path)
+        input_path = self.input_path if use_original_input else None
         
-        # Create a unique output path to prevent file conflicts between processes
-        unique_id = str(uuid.uuid4())[:8]  # Use first 8 chars of UUID for brevity
+        # If no original input, we need to create a temporary file
+        if not input_path:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as f:
+                input_path = f.name
+            
+            # Write clip to temporary file
+            self.video_clip.write_videofile(
+                input_path, 
+                codec='libx264',
+                preset='ultrafast',  # Speed prioritized for temp file
+                audio=False  # Skip audio
+            )
+        
+        # Create unique output path
+        unique_id = str(uuid.uuid4())[:8]
         output_path = os.path.join(os.path.dirname(input_path), f"output_{int(time.time())}_{unique_id}.mp4")
         
-        # Build FFmpeg command with saved effects
-        success = False
+        # Try multiple times with fallback for reliability
         attempts = 0
-        max_attempts = 2  # Try twice with original effects, then fallback
+        max_attempts = 2  # Try original twice, then fallback
+        success = False
         
         while not success and attempts < max_attempts + 1:
             try:
@@ -291,15 +293,28 @@ class VideoTransformer:
                 
                 if attempts < max_attempts:
                     # Use original effects for first attempts
-                    # Collect and combine video filters
+                    # Collect and combine video filters and metadata parameters
                     video_filters = []
+                    metadata_params = []
                     other_params = []
-                    for param in self.ffmpeg_params:
+                    
+                    for i, param in enumerate(self.ffmpeg_params):
                         if param == '-vf':
+                            # Skip the '-vf' flag itself and add its value to video_filters
+                            if i + 1 < len(self.ffmpeg_params):
+                                video_filters.append(self.ffmpeg_params[i + 1])
+                        elif param == '-metadata':
+                            # Add metadata and its value
+                            if i + 1 < len(self.ffmpeg_params):
+                                metadata_params.extend([param, self.ffmpeg_params[i + 1]])
+                        elif i > 0 and self.ffmpeg_params[i - 1] in ['-vf', '-metadata']:
+                            # Skip values that were already processed with their flags
                             continue
                         elif isinstance(param, str) and '=' in param:
+                            # Regular filter parameters
                             video_filters.append(param)
                         else:
+                            # Other parameters like -t (duration)
                             other_params.append(param)
                     
                     # Combine all video filters into a single filter chain
@@ -308,6 +323,10 @@ class VideoTransformer:
                         video_filters.append("scale='if(mod(iw,2),iw-1,iw)':'if(mod(ih,2),ih-1,ih)'")
                         video_filters.append("format=yuv420p")
                         cmd.extend(['-vf', ','.join(video_filters)])
+                    
+                    # Add metadata parameters
+                    if metadata_params:
+                        cmd.extend(metadata_params)
                     
                     # Add any other parameters
                     cmd.extend(other_params)

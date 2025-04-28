@@ -9,11 +9,12 @@ HASH_PRESETS = {
         "name": "Fast Processing",
         "description": "Quick processing with basic hash modifications",
         # Only watermark, glitch, and noise for fastest mode
-        "methods": ["watermark", "glitch", "noise"],
+        "methods": ["watermark", "glitch", "noise", "metadata"],
         "default_intensities": {
             "watermark": 0.1,
             "glitch": 0.1,
-            "noise": 0.1
+            "noise": 0.1,
+            "metadata": 0.15
         }
     },
     "normal": {

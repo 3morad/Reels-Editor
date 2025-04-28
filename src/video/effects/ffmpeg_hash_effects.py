@@ -263,23 +263,72 @@ def get_watermark_params(intensity: float = 0.5) -> List[str]:
 
 def get_metadata_params(intensity: float = 0.5) -> List[str]:
     """
-    Simulates metadata corruption.
+    Simulates metadata corruption and adds random metadata.
     Args:
         intensity: Effect intensity (0.1 to 1.0)
     """
-    fps = random.choice([15, 24, 30, 60])
-    rotate = random.choice([0, 1, 2, 3])
+    # Video technical modifications - only FPS changes, no rotation
+    fps = random.choice([15, 24, 29.97, 30, 60])
     filters = []
     filters.append(f'fps={fps}')
-    if rotate == 1:
-        filters.append('transpose=1')
-    elif rotate == 2:
-        filters.append('transpose=2,transpose=2')
-    elif rotate == 3:
-        filters.append('transpose=2')
+    
+    # Random trim but no rotation
     if random.random() < 0.5:
         filters.append('trim=end=5')
-    return ['-vf', ','.join(filters)]
+
+    # Random metadata generation
+    metadata_params = []
+    
+    # Random timestamp between 2024-2025
+    year = random.randint(2024, 2025)
+    month = random.randint(1, 12)
+    day = random.randint(1, 28)  # Using 28 to be safe with February
+    hour = random.randint(0, 23)
+    minute = random.randint(0, 59)
+    second = random.randint(0, 59)
+    creation_time = f"{year}-{month:02d}-{day:02d}T{hour:02d}:{minute:02d}:{second:02d}"
+    metadata_params.extend(['-metadata', f'creation_time={creation_time}'])
+    
+    # Random location (coordinates within reasonable bounds)
+    lat = random.uniform(-90, 90)
+    lon = random.uniform(-180, 180)
+    metadata_params.extend(['-metadata', f'location={lat:.6f}/{lon:.6f}'])
+    
+    # Random device model
+    devices = [
+        'iPhone 13 Pro', 'iPhone 14 Pro Max', 'iPhone 15', 'Samsung Galaxy S23', 
+        'Google Pixel 7', 'Samsung Galaxy S24 Ultra', 'iPhone 12 Pro'
+    ]
+    device = random.choice(devices)
+    metadata_params.extend(['-metadata', f'device_model={device}'])
+    
+    # Random comments
+    comments = [
+        'Original content', 'Created with love', 'My video creation', 
+        'Edited version', 'Final cut', 'Draft version', 'Content creation',
+        'Social media content', 'Original footage'
+    ]
+    comment = random.choice(comments)
+    metadata_params.extend(['-metadata', f'comment={comment}'])
+    
+    # Random tags/artist
+    artists = ['Smartphone', 'Mobile Camera', 'Digital Creator', 'Content Creator']
+    artist = random.choice(artists)
+    metadata_params.extend(['-metadata', f'artist={artist}'])
+    
+    # Random title (60% chance)
+    if random.random() < 0.6:
+        titles = ['Video', 'Clip', 'Recording', 'Footage', 'Content']
+        title = random.choice(titles)
+        metadata_params.extend(['-metadata', f'title={title}'])
+
+    # Return video filters and metadata parameters separately
+    # Only include '-vf' if we have filters
+    result = []
+    if filters:
+        result.extend(['-vf', ','.join(filters)])
+    result.extend(metadata_params)
+    return result
 
 def get_delay_params(intensity: float = 0.5) -> List[str]:
     """
