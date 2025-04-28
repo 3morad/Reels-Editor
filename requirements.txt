@@ -1,5 +1,5 @@
 streamlit>=1.25.0
-moviepy>=1.0.3
+moviepy==1.0.3
 numpy>=1.23.0
 opencv-contrib-python>=4.7.0
 ffmpeg-python>=0.2.0
